@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV Column Display with Count and Percentage (Average)</title>
+    <link rel="stylesheet" href="style/weeklygoals.css">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <!-- Google One Tap JS library -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+    <!-- MOVE THIS INTO BODY -->
+    <div id="g_id_onload"
+         data-client_id="518347118969-drq9o3vr7auf78l16qcteor9ng4nv7qd.apps.googleusercontent.com"
+         data-context="signin"
+         data-ux_mode="popup"
+         data-auto_prompt="true"
+         data-callback="handleOneTapCredentialResponse">
+    </div>
+    
+   
+
+    <!-- --- Google Sheets Sign In --- -->
+     <button id="signout_button" style="display:none;margin-left:12px;font-size:1.1em;">Sign out</button>
+    <div id="user-info"></div>
+    <h1>Weekly Goals</h1>
+    <div class="download-info" id="csvDate"></div>
+    <button id="authorize_button" style="margin: 18px 0 8px 0; font-size: 1.1em;">Sign in to View Google Sheet</button>
+    <button id="refresh_button" style="display:none;">Refresh Data</button>
+    <br>
+    <div id="toast" style="visibility:hidden; min-width:180px; background-color:#333; color:#fff; text-align:center; border-radius:8px; padding:14px; position:fixed; z-index:9999; left:50%; bottom:30px; font-size:17px; transform:translateX(-50%); transition:visibility 0s, opacity 0.5s linear; opacity:0;">
+  Refreshed!
+</div>
+
+    <div style="display:none;">
+      <div id="dropZone">
+        <p>Drag and drop your CSV file here or</p>
+        <label for="csvFileInput" style="color: #0044cc; cursor: pointer; text-decoration: underline;">click</label>
+        to upload.
+        <input type="file" id="csvFileInput" style="display: none;" accept=".csv" />
+      </div>
+    </div>
+    <br>
+    <div id="table-container"></div>
+    <div class="loading-bar-overlay" id="loadingBarOverlay" style="display: none;">
+      <div class="loading-bar-container" id="loadingBarContainer">
+        <div class="loading-bar" id="loadingBar"></div>
+      </div>
+    </div>
+    <button id="copy-today-column-btn" style="display:none;position:fixed;bottom:32px;right:32px;z-index:9999;">Copy 7/21 Column Values</button>
+
+    <!-- Luxon must come first for date handling -->
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+    <!-- Your main JS -->
+    <script src="database.js"></script>
+    <!-- Google API JS (for Sheets auth, etc) -->
+     <script src="https://accounts.google.com/gsi/client" async defer onload="gisLoaded()"></script>
+
+    <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
+    <!-- Only ONE gsi/client script is needed, above -->
+    <script>
+      function handleOneTapCredentialResponse(response) {
+        console.log('[One Tap] Credential response:', response);
+        const jwt = response.credential;
+        const base64Url = jwt.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
+          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        const user = JSON.parse(jsonPayload);
+        console.log('[One Tap] User info:', user);
+        document.getElementById('user-info').innerText = `Hello, ${user.name}!`;
+      }
+    </script>
+</body>
+</html>
