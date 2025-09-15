@@ -1,6 +1,6 @@
+// ===== GOOGLE SHEETS + GIS SIGN-IN (popup token flow) =====
 
-
-// ---- GOOGLE SHEETS + GIS SIGN-IN CONFIG ----
+// --- Config ---
 const CLIENT_ID = "518347118969-drq9o3vr7auf78l16qcteor9ng4nv7qd.apps.googleusercontent.com";
 const API_KEY   = "AIzaSyBGYsHkTEvE9eSYo9mFCUIecMcQtT8f0hg";
 const SHEET_ID  = "1E3sRhqKfzxwuN6VOmjI2vjWsk_1QALEKkX7mNXzlVH8";
@@ -10,12 +10,14 @@ const SCOPES    = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const DEFAULT_GID = 0;
 
 // Table + UI config
-const PRODUCT_TAB_FALLBACK = "DataLoad"; // used if we can't resolve a title from gid
-const PRODUCT_RANGE        = "A1:H10000"; // Vendor..Price Extended columns
+const PRODUCT_TAB_FALLBACK = "DataLoad";   // used if we can't resolve a title from gid
+const PRODUCT_RANGE        = "A1:H10000";  // Vendor..Price Extended columns
 
+// --- State ---
 let tokenClient;
 let gapiInited = false;
 let gisInited  = false;
+let tokenRequestInFlight = false; // guard against double-click or race with other flows
 
 // =============== Bootstrap GAPI (Sheets v4) ===============
 function gapiLoaded() {
@@ -36,7 +38,7 @@ function gisLoaded() {
     client_id: CLIENT_ID,
     scope: SCOPES,
     callback: async (tokenResponse) => {
-      // Token granted
+      tokenRequestInFlight = false;
       console.log("[GIS] Token received. Access token present:", !!tokenResponse.access_token);
 
       // Hide authorize, show signout
@@ -46,7 +48,6 @@ function gisLoaded() {
       // Show loader bar while we fetch
       document.getElementById("loadingBarOverlay").style.display = "block";
 
-      // Load data
       try {
         await listSheetData();
         showToast("Sheet loaded.");
@@ -64,9 +65,10 @@ function gisLoaded() {
   maybeEnableButtons();
 }
 
+// =============== Buttons/Handlers =========================
 function maybeEnableButtons() {
-  const authBtn   = document.getElementById("authorize_button");
-  const signoutBtn= document.getElementById("signout_button");
+  const authBtn    = document.getElementById("authorize_button");
+  const signoutBtn = document.getElementById("signout_button");
 
   if (!authBtn || !signoutBtn) {
     console.warn("Authorize/Signout buttons not found in DOM.");
@@ -75,7 +77,13 @@ function maybeEnableButtons() {
 
   if (gapiInited && gisInited) {
     authBtn.onclick = () => {
+      if (tokenRequestInFlight) {
+        console.log("[Buttons] Token request already in flight; ignoring extra click.");
+        return;
+      }
+      tokenRequestInFlight = true;
       console.log("[Buttons] Authorize clicked.");
+      // Prompt set to "" means "no forced account picker if already known"
       tokenClient.requestAccessToken({ prompt: "" });
     };
     signoutBtn.onclick = handleSignoutClick;
@@ -86,13 +94,16 @@ function maybeEnableButtons() {
 }
 
 function handleSignoutClick() {
-  const token = gapi.client.getToken();
-  if (token) {
-    google.accounts.oauth2.revoke(token.access_token, () => {
+  const tokenObj = gapi.client.getToken();
+  if (tokenObj && tokenObj.access_token) {
+    google.accounts.oauth2.revoke(tokenObj.access_token, () => {
       console.log("[GIS] Token revoked.");
-      gapi.client.setToken("");
+      gapi.client.setToken(""); // clear in gapi
+      tokenRequestInFlight = false;
+
       document.getElementById("authorize_button").style.display = "inline-block";
       document.getElementById("signout_button").style.display   = "none";
+
       // Clear table
       const tbody = document.querySelector("#data-table tbody");
       if (tbody) tbody.innerHTML = "";
@@ -239,6 +250,19 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
 }
 
 // ====================== Render ============================
+function ensureTable() {
+  let table = document.getElementById("data-table");
+  if (!table) {
+    console.warn("#data-table not found. Creating one inside #table-container.");
+    const container = document.getElementById("table-container") || document.body;
+    table = document.createElement("table");
+    table.id = "data-table";
+    table.innerHTML = "<thead></thead><tbody></tbody>";
+    container.appendChild(table);
+  }
+  return table;
+}
+
 function formatMoney(n) {
   const x = Number(n ?? 0);
   if (!Number.isFinite(x)) return "";
@@ -246,11 +270,7 @@ function formatMoney(n) {
 }
 
 function renderTable(rows) {
-  const table = document.getElementById("data-table");
-  if (!table) {
-    console.warn('#data-table not found. Create <table id="data-table"><thead>…</thead><tbody></tbody></table>');
-    return;
-  }
+  const table = ensureTable();
   const thead = table.querySelector("thead");
   const tbody = table.querySelector("tbody");
   if (thead) {
@@ -307,11 +327,13 @@ function showToast(message = "Done") {
   const el = document.getElementById("toast");
   if (!el) return;
   el.textContent = message;
+  el.style.visibility = "visible";
   el.style.opacity = "1";
   el.classList.add("show");
   setTimeout(() => {
     el.style.opacity = "0";
     el.classList.remove("show");
+    el.style.visibility = "hidden";
   }, 1800);
 }
 
@@ -328,6 +350,6 @@ setInterval(() => {
   }
 }, 300000);
 
-// Expose init functions to window for inline script tags that call them
+// Expose init functions for script onload callbacks
 window.gapiLoaded = gapiLoaded;
 window.gisLoaded  = gisLoaded;
