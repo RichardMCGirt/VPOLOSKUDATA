@@ -22,11 +22,84 @@ let tokenClient;
 let gapiInited = false;
 let gisInited  = false;
 let tokenRequestInFlight = false; // guard against double-click or race with other flows
+
 // Data state
-let ALL_ROWS = [];         // full product list from sheet
-let FILTERED_ROWS = [];    // after search/vendor filters
+let ALL_ROWS = [];         // full product list from sheet (augmented with .category)
+let FILTERED_ROWS = [];    // after search/vendor/category filters
 const CART = new Map();    // key: sku|vendor -> {row, qty, unitBase, unitSell}
-let LABOR_LINES = [];       // array of {id, name, base}
+let LABOR_LINES = [];      // array of {id, name, base}
+
+// Cached categories
+let ALL_CATEGORIES = [];   // array of strings
+let ACTIVE_CATEGORY = "";  // pills set this, kept in sync with #categoryFilter
+
+// =============== Category rules (Description-based) ===============
+// ---------- category logic (drop-in replacement) ----------
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * "Word-like" match: prefers whole-word-style matches, but will fall back to simple includes
+ * for short tokens like "2x". Case-insensitive.
+ */
+function wordMatch(text, kw) {
+  const t = String(text || "").toLowerCase();
+  const k = String(kw || "").toLowerCase();
+  if (!k) return false;
+
+  // Try a boundary-style match (don’t require \b so numbers/symbols like 2x still work via fallback)
+  const boundary = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(k)}(?![A-Za-z0-9])`, "i");
+  if (boundary.test(t)) return true;
+
+  // Fallback to substring includes for short tokens (e.g., "2x")
+  return t.includes(k);
+}
+
+// Order matters: we now check Hardware/Fasteners before Lumber.
+const CATEGORY_RULES = [
+  { name: "Hardware", includes: [
+      "joist hanger", "hanger", "bracket", "connector", "strap", "clip", "plate", "tie", "simpson"
+      // if you want nails to live under Hardware (your ask), keep "nail" terms here:
+       
+    ]},
+  { name: "Fasteners", includes: [
+      "screw", "screws", "staple", "staples", "anchor", "bolt", "bolts", "washer", "washers",
+      "collated", "1 1/4in Trim Nails 1#", "deck screw", "trim screw", "nail", "nails", "ring shank", "finish nail", "common nail", "framing nail", "self-tapping"
+    ]},
+  { name: "PVC", includes: ["pvc","azek","versatex","cellular pvc","pvc trim","vtp"] },
+  { name: "Trim", includes: ["trim","casing","base","mould","molding","crown","shoe","quarter round","brickmould","jamb"] },
+  { name: "Siding - Vinyl", includes: ["vinyl siding","vinyl","soffit","fascia","j-channel","starter strip","starter","outside corner","ocb"] },
+  { name: "Siding - Fiber Cement", includes: ["fiber cement","hardie","james hardie","hardiplank","hardieplank"] },
+  { name: "Insulation", includes: ["insulation","batt","r-","foam","expanding foam","sealant foam"] },
+  { name: "Adhesives / Sealants", includes: ["adhesive","caulk","sealant","construction adhesive","glue","liquid nails"] },
+  { name: "Roofing", includes: ["roof","shingle","felt","underlayment","drip edge","ridge","vent"] },
+  { name: "Doors / Windows", includes: ["door","prehang","slab","window","sash","stile","frame"] },
+  { name: "Tools", includes: ["blade","saw","bit","tape","knife","hammer","drill","driver","chalk","level"] },
+  { name: "Paint / Finish", includes: ["paint","primer","stain","finish"] },
+  { name: "Electrical", includes: ["electrical","wire","outlet","switch","box"] },
+  { name: "Plumbing", includes: ["plumb","pipe","pvc sch","cpvc","pex","fitting","coupling","tee","elbow"] },
+  { name: "Lumber", includes: ["lumber","stud","2x","x4","osb","plywood","board","4x8","rim","joist"] },
+  { name: "Misc", includes: [] }
+];
+
+function categorizeDescription(desc = "") {
+  const d = String(desc || "");
+
+  // Force rule for nails — change "Hardware" to "Fasteners" if that’s your preferred bucket.
+  if (/\bnails?\b/i.test(d) || /\bring[-\s]?shank\b/i.test(d)) {
+    return "Hardware";
+  }
+
+  // Evaluate rules in order; the first match wins.
+  for (const rule of CATEGORY_RULES) {
+    if (rule.includes.some(kw => wordMatch(d, kw))) {
+      return rule.name;
+    }
+  }
+  return "Misc";
+}
+
 
 // =============== Bootstrap GAPI (Sheets v4) ===============
 function gapiLoaded() {
@@ -72,16 +145,16 @@ function gisLoaded() {
   gisInited = true;
   console.log("[GIS] OAuth client initialized.");
   maybeEnableButtons();
-  // Try silent token (no forced picker if already granted)
-try {
-  if (!gapi.client.getToken()?.access_token && tokenClient) {
-    tokenRequestInFlight = true;
-    tokenClient.requestAccessToken({ prompt: "" });
-  }
-} catch (e) {
-  console.warn("Silent token attempt failed:", e);
-}
 
+  // Try silent token (no forced picker if already granted)
+  try {
+    if (!gapi.client.getToken()?.access_token && tokenClient) {
+      tokenRequestInFlight = true;
+      tokenClient.requestAccessToken({ prompt: "" });
+    }
+  } catch (e) {
+    console.warn("Silent token attempt failed:", e);
+  }
 }
 
 async function updateAllPricingFromSheet() {
@@ -134,7 +207,7 @@ function maybeEnableButtons() {
     };
     signoutBtn.onclick = handleSignoutClick;
 
-    // Enable Update Pricing when signed in (or enable here if you prefer)
+    // Enable Update Pricing when signed in
     if (updateBtn) {
       updateBtn.disabled = false;
       updateBtn.onclick = updateAllPricingFromSheet;
@@ -145,7 +218,6 @@ function maybeEnableButtons() {
     console.log("[Buttons] Waiting for GAPI/GIS init...");
   }
 }
-
 
 function handleSignoutClick() {
   const tokenObj = gapi.client.getToken();
@@ -170,7 +242,9 @@ function handleSignoutClick() {
       // Disable filters
       setDisabled("searchInput", true);
       setDisabled("vendorFilter", true);
+      setDisabled("categoryFilter", true);
       setDisabled("clearFilters", true);
+      showEl("categoryChips", false);
     });
   }
 }
@@ -288,15 +362,17 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
       px = m * c;
     }
 
+    const description = norm(desc);
     rows.push({
       vendor: norm(vendor) || "N/A",
       sku: cleanSku,
       uom: norm(uom),
-      description: norm(desc),
+      description,
       skuHelper: norm(helper) || makeSkuHelper(sku, vendor),
       uomMultiple: mult,
       cost: cost,
       priceExtended: px,
+      category: categorizeDescription(description),
     });
   }
 
@@ -406,19 +482,76 @@ function populateVendorFilter(rows) {
   sel.innerHTML = `<option value="">All vendors</option>` + vendors.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
 }
 
+function buildCategories(rows) {
+  const s = new Set(rows.map(r => r.category || "Misc"));
+  const categories = Array.from(s).sort((a,b)=>a.localeCompare(b));
+  ALL_CATEGORIES = categories;
+  return categories;
+}
+
+function populateCategoryFilter(rows) {
+  const sel = document.getElementById("categoryFilter");
+  if (!sel) return;
+  const cats = buildCategories(rows);
+  sel.innerHTML = `<option value="">All categories</option>` + cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+}
+
+function renderCategoryChips() {
+  const wrap = document.getElementById("categoryChips");
+  if (!wrap) return;
+  wrap.innerHTML = ""; // reset
+  const all = document.createElement("button");
+  all.className = "chip" + (ACTIVE_CATEGORY ? "" : " active");
+  all.textContent = "All";
+  all.setAttribute("data-cat", "");
+  wrap.appendChild(all);
+
+  for (const c of ALL_CATEGORIES) {
+    const btn = document.createElement("button");
+    btn.className = "chip" + (c === ACTIVE_CATEGORY ? " active" : "");
+    btn.textContent = c;
+    btn.setAttribute("data-cat", c);
+    wrap.appendChild(btn);
+  }
+  showEl("categoryChips", true);
+
+  // chip clicks
+  wrap.onclick = (ev) => {
+    const chip = ev.target.closest(".chip");
+    if (!chip) return;
+    ACTIVE_CATEGORY = chip.getAttribute("data-cat") || "";
+    // sync dropdown
+    const sel = document.getElementById("categoryFilter");
+    if (sel) sel.value = ACTIVE_CATEGORY;
+    // set active class
+    Array.from(wrap.querySelectorAll(".chip")).forEach(c => c.classList.toggle("active", c === chip));
+    applyFilters();
+  };
+}
+
 function applyFilters() {
-  const q = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
+  const q    = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
   const vSel = (document.getElementById("vendorFilter")?.value || "");
-  FILTERED_ROWS = ALL_ROWS.filter(r => {
+  const cSel = ACTIVE_CATEGORY || (document.getElementById("categoryFilter")?.value || "");
+
+  const filtered = ALL_ROWS.filter(r => {
     const matchesVendor = !vSel || r.vendor === vSel;
+    const matchesCat    = !cSel || r.category === cSel;
     const hay = `${r.sku} ${r.description}`.toLowerCase();
     const matchesQuery = !q || hay.includes(q);
-    return matchesVendor && matchesQuery;
+    return matchesVendor && matchesCat && matchesQuery;
   });
+
+  // Sort by Category -> Description -> SKU to keep things tidy
+  FILTERED_ROWS = filtered.sort((a,b) =>
+    (a.category || "").localeCompare(b.category || "") ||
+    a.description.localeCompare(b.description) ||
+    a.sku.localeCompare(b.sku)
+  );
+
   renderTable(FILTERED_ROWS);
 }
 
-// ====================== Cart ============================
 // ====================== Cart ============================
 function addToCart(row, qty) {
   const key = `${row.sku}|${row.vendor}`;
@@ -431,12 +564,11 @@ function addToCart(row, qty) {
     CART.set(key, { row, qty, unitBase: ub, unitSell: us });
   }
   // Ensure there's at least one labor input available
-  if (LABOR_LINES.length === 0) {
-    addLaborLine(0);
-  }
+  if (LABOR_LINES.length === 0) addLaborLine(0);
+
   renderCart();
   showEl("cart-section", true);
-  persistState(); // NEW
+  persistState();
 }
 
 function updateCartQty(key, qty) {
@@ -444,23 +576,22 @@ function updateCartQty(key, qty) {
   if (!item) return;
   item.qty = Math.max(1, Math.floor(qty || 1));
   renderCart();
-  persistState(); // NEW
+  persistState();
 }
 
 function removeCartItem(key) {
+  if (!CART.has(key)) return;
   CART.delete(key);
   renderCart();
-  if (CART.size === 0 && LABOR_LINES.length === 0) {
-    showEl("cart-section", false);
-  }
-  persistState(); // NEW
+  if (CART.size === 0 && LABOR_LINES.length === 0) showEl("cart-section", false);
+  persistState();
 }
 
 function clearCart() {
   CART.clear();
   renderCart();
   if (LABOR_LINES.length === 0) showEl("cart-section", false);
-  persistState(); // NEW
+  persistState();
 }
 
 // ====================== Labor ============================
@@ -469,18 +600,15 @@ function addLaborLine(base = 0, name = "Labor line") {
   LABOR_LINES.push({ id: _laborIdSeq++, base: Number(base) || 0, name });
   showEl("cart-section", true);
   renderCart();
-  persistState(); // NEW
+  persistState();
 }
 
 function removeLaborLine(id) {
   LABOR_LINES = LABOR_LINES.filter(l => l.id !== id);
   renderCart();
-  if (CART.size === 0 && LABOR_LINES.length === 0) {
-    showEl("cart-section", false);
-  }
-  persistState(); // NEW
+  if (CART.size === 0 && LABOR_LINES.length === 0) showEl("cart-section", false);
+  persistState();
 }
-
 
 function renderCart() {
   const tbody = document.querySelector("#cart-table tbody");
@@ -518,7 +646,7 @@ function renderCart() {
 
   tbody.innerHTML = rows.join("");
 
-  // Update qty (incremental: update the line total + totals only)
+  // Update qty (incremental)
   tbody.oninput = (ev) => {
     const input = ev.target.closest(".cart-qty");
     if (!input) return;
@@ -539,14 +667,13 @@ function renderCart() {
     persistState();
   };
 
-  // ✅ NEW: remove material items via delegated click handler
+  // Remove material items via delegated click handler
   tbody.onclick = (ev) => {
     const btn = ev.target.closest(".remove-item");
     if (!btn) return;
     const key = btn.getAttribute("data-key");
     if (!key) return;
-
-    removeCartItem(key);   // re-renders + persists
+    removeCartItem(key);
   };
 
   // Labor + totals
@@ -557,146 +684,6 @@ function renderCart() {
   document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
 }
 
-function removeCartItem(key) {
-  if (!CART.has(key)) return;
-  CART.delete(key);
-
-  renderCart();
-
-  if (CART.size === 0 && LABOR_LINES.length === 0) {
-    showEl("cart-section", false);
-  }
-  persistState();
-}
-
-
-
-// ========= Persistence (localStorage) =========
-const STORAGE_KEY = "vanir_cart_v1";
-let _restoreCache = null; // staged restore until Sheet rows are loaded
-
-function serializeState() {
-  return {
-    cart: Array.from(CART.entries()).map(([key, item]) => ({
-      key,
-      qty: item.qty,
-      unitBase: item.unitBase,
-      unitSell: item.unitSell,
-      // persist the "row" we used when adding to cart so we can render before sheet loads
-      row: {
-        vendor: item?.row?.vendor ?? "",
-        sku: item?.row?.sku ?? "",
-        uom: item?.row?.uom ?? "",
-        description: item?.row?.description ?? "",
-        // keep any price-ish columns you parse in unitBase(row)
-        price: item?.row?.price, 
-        priceExtended: item?.row?.priceExtended,
-      },
-    })),
-    labor: LABOR_LINES.map(l => ({
-      id: l.id,
-      base: l.base,
-      name: l.name || "Labor line",
-    })),
-    laborIdSeq: typeof _laborIdSeq === "number" ? _laborIdSeq : 1,
-  };
-}
-
-function persistState() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
-  } catch (e) {
-    console.warn("persistState failed:", e);
-  }
-}
-
-function stageRestoreFromLocalStorage() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    _restoreCache = raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    console.warn("stageRestoreFromLocalStorage failed:", e);
-    _restoreCache = null;
-  }
-}
-
-function applyRestoreAfterDataLoad() {
-  if (!_restoreCache) return;
-
-  // Build an index of current sheet rows by key sku|vendor
-  const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}`, r]));
-
-  // Restore cart
-  CART.clear();
-  for (const saved of _restoreCache.cart || []) {
-    const key = saved.key || `${saved?.row?.sku}|${saved?.row?.vendor}`;
-    const liveRow = index.get(key) || saved.row || null;
-    if (!liveRow) continue;
-
-    // Recompute unitBase/unitSell with current sheet row if available
-    const ub = unitBase(liveRow);
-    const us = ub * MARKUP_MULT;
-    CART.set(key, {
-      row: liveRow,
-      qty: Math.max(1, Math.floor(saved.qty || 1)),
-      unitBase: ub,
-      unitSell: us,
-    });
-  }
-
-  // Restore labor
-  LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => ({
-    id: l.id,
-    base: Number(l.base) || 0,
-    name: l.name || "Labor line",
-  })) : [];
-  if (typeof _restoreCache.laborIdSeq === "number") {
-    _laborIdSeq = _restoreCache.laborIdSeq;
-  }
-
-  _restoreCache = null;
-  renderCart(); // shows restored cart immediately
-}
-
-// Debounce helper you already use; add if missing here:
-function debounce(fn, ms) {
-  let t;
-  return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
-  };
-}
-
-  // Totals
-  document.getElementById("productTotal").textContent = formatMoney(productTotal);
-  const laborTotal = calcLaborTotal();
-  document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
-  document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
-
-
-function updateTotalsOnly() {
-  // products
-  let productTotal = 0;
-  for (const [, item] of CART.entries()) {
-    productTotal += item.unitSell * item.qty;
-  }
-  document.getElementById("productTotal").textContent = formatMoney(productTotal);
-
-  // labor
-  const laborTotal = calcLaborTotal();
-  document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
-
-  // grand
-  document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
-}
-
-
-
-// ====================== Labor ============================
-
-document.addEventListener("DOMContentLoaded", () => {
-  stageRestoreFromLocalStorage();
-});
 function calcLaborTotal() {
   let total = 0;
   for (const l of LABOR_LINES) {
@@ -709,6 +696,7 @@ function calcLaborTotal() {
 function renderLabor() {
   const wrap = document.getElementById("labor-list");
   if (!wrap) return;
+
   // Clear existing rows (keeping header area)
   const existingRows = wrap.querySelectorAll(".labor-row");
   existingRows.forEach(el => el.remove());
@@ -747,7 +735,7 @@ function renderLabor() {
       document.getElementById("grandTotal").textContent =
         formatMoney(calcProductsTotal() + calcLaborTotal());
 
-      persistState(); // NEW
+      persistState();
       return;
     }
 
@@ -758,7 +746,7 @@ function renderLabor() {
       const l  = LABOR_LINES.find(x => x.id === id);
       if (l) {
         l.name = nameEl.value;
-        persistState(); // NEW
+        persistState();
       }
     }
   };
@@ -767,7 +755,7 @@ function renderLabor() {
     const btn = ev.target.closest(".remove-labor");
     if (!btn) return;
     const id = Number(btn.getAttribute("data-id"));
-    removeLaborLine(id); // will persist inside remove
+    removeLaborLine(id);
   };
 }
 
@@ -778,21 +766,146 @@ function calcProductsTotal() {
   return productTotal;
 }
 
+function updateTotalsOnly() {
+  // products
+  let productTotal = 0;
+  for (const [, item] of CART.entries()) {
+    productTotal += item.unitSell * item.qty;
+  }
+  document.getElementById("productTotal").textContent = formatMoney(productTotal);
+
+  // labor
+  const laborTotal = calcLaborTotal();
+  document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
+
+  // grand
+  document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
+}
+
+// ========= Persistence (localStorage) =========
+const STORAGE_KEY = "vanir_cart_v1";
+let _restoreCache = null; // staged restore until Sheet rows are loaded
+
+function serializeState() {
+  return {
+    cart: Array.from(CART.entries()).map(([key, item]) => ({
+      key,
+      qty: item.qty,
+      unitBase: item.unitBase,
+      unitSell: item.unitSell,
+      // persist the "row" we used when adding to cart so we can render before sheet loads
+      row: {
+        vendor: item?.row?.vendor ?? "",
+        sku: item?.row?.sku ?? "",
+        uom: item?.row?.uom ?? "",
+        description: item?.row?.description ?? "",
+        price: item?.row?.price,
+        priceExtended: item?.row?.priceExtended,
+        category: item?.row?.category ?? "Misc",
+      },
+    })),
+    labor: LABOR_LINES.map(l => ({
+      id: l.id,
+      base: l.base,
+      name: l.name || "Labor line",
+    })),
+    laborIdSeq: typeof _laborIdSeq === "number" ? _laborIdSeq : 1,
+    activeCategory: ACTIVE_CATEGORY
+  };
+}
+
+function persistState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+  } catch (e) {
+    console.warn("persistState failed:", e);
+  }
+}
+
+function stageRestoreFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    _restoreCache = raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.warn("stageRestoreFromLocalStorage failed:", e);
+    _restoreCache = null;
+  }
+}
+
+function applyRestoreAfterDataLoad() {
+  if (!_restoreCache) return;
+
+  // Build an index of current sheet rows by key sku|vendor
+  const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}`, r]));
+
+  // Restore cart
+  CART.clear();
+  for (const saved of _restoreCache.cart || []) {
+    const key = saved.key || `${saved?.row?.sku}|${saved?.row?.vendor}`;
+    const liveRow = index.get(key) || saved.row || null;
+    if (!liveRow) continue;
+
+    // Ensure category attached
+    if (!liveRow.category) liveRow.category = categorizeDescription(liveRow.description || "");
+
+    // Recompute unitBase/unitSell with current sheet row if available
+    const ub = unitBase(liveRow);
+    const us = ub * MARKUP_MULT;
+    CART.set(key, {
+      row: liveRow,
+      qty: Math.max(1, Math.floor(saved.qty || 1)),
+      unitBase: ub,
+      unitSell: us,
+    });
+  }
+
+  // Restore labor & seq
+  LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => ({
+    id: l.id,
+    base: Number(l.base) || 0,
+    name: l.name || "Labor line",
+  })) : [];
+  if (typeof _restoreCache.laborIdSeq === "number") _laborIdSeq = _restoreCache.laborIdSeq;
+
+  // Restore active category
+  ACTIVE_CATEGORY = _restoreCache.activeCategory || "";
+
+  _restoreCache = null;
+  renderCart(); // shows restored cart immediately
+}
+
+// Debounce
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
 
 // ====================== Main Flow ========================
 async function listSheetData() {
-  const { rows, title } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
+  const { rows } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
+
+  // Attach to global & build categories
   ALL_ROWS = rows;
+  buildCategories(ALL_ROWS);
+  populateVendorFilter(ALL_ROWS);
+  populateCategoryFilter(ALL_ROWS);
+
   // restore saved cart/labor now that ALL_ROWS is ready
   applyRestoreAfterDataLoad();
-  populateVendorFilter(ALL_ROWS);
+
+  // controls enabled
   setDisabled("searchInput", false);
   setDisabled("vendorFilter", false);
+  setDisabled("categoryFilter", false);
   setDisabled("clearFilters", false);
+
   wireControlsOnce();
+  renderCategoryChips();
   applyFilters();
 }
-
 
 // ====================== Controls Wiring ===================
 let _controlsWired = false;
@@ -802,17 +915,30 @@ function wireControlsOnce() {
 
   const search = document.getElementById("searchInput");
   const vendor = document.getElementById("vendorFilter");
+  const catSel = document.getElementById("categoryFilter");
   const clear  = document.getElementById("clearFilters");
   const clearCartBtn = document.getElementById("clearCart");
   const addLaborBtn  = document.getElementById("addLabor");
 
   if (search) search.addEventListener("input", debounce(applyFilters, 120));
   if (vendor) vendor.addEventListener("change", applyFilters);
+  if (catSel) catSel.addEventListener("change", () => {
+    ACTIVE_CATEGORY = catSel.value || "";
+    // sync chips
+    renderCategoryChips();
+    applyFilters();
+  });
+
   if (clear)  clear.addEventListener("click", () => {
     if (search) search.value = "";
     if (vendor) vendor.value = "";
+    ACTIVE_CATEGORY = "";
+    const catSel2 = document.getElementById("categoryFilter");
+    if (catSel2) catSel2.value = "";
+    renderCategoryChips();
     applyFilters();
   });
+
   if (clearCartBtn) clearCartBtn.addEventListener("click", clearCart);
   if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0));
 }
@@ -837,7 +963,7 @@ function showEl(id, show) {
   if (!el) return;
   if (show) {
     el.classList.remove("hidden");
-    el.style.display = (id === "table-container" ? "block" : "");
+    if (id === "table-container") el.style.display = "block";
   } else {
     el.classList.add("hidden");
   }
@@ -847,14 +973,6 @@ function setDisabled(id, isDisabled) {
   const el = document.getElementById(id);
   if (!el) return;
   el.disabled = !!isDisabled;
-}
-
-function debounce(fn, ms) {
-  let t;
-  return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
-  };
 }
 
 // Auto-refresh every 5 minutes if signed in
@@ -869,6 +987,11 @@ setInterval(() => {
       });
   }
 }, 300000);
+
+// Restore staged state ASAP
+document.addEventListener("DOMContentLoaded", () => {
+  stageRestoreFromLocalStorage();
+});
 
 // Expose init functions for script onload callbacks
 window.gapiLoaded = gapiLoaded;

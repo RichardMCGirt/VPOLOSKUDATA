@@ -8,8 +8,8 @@
 :root{
   --gap: 12px;
   --pad: 12px;
-  --radius: 10px;
-  --border:#ddd;
+  --radius: 12px;
+  --border:#e5e7eb;
   --bg:#ffffff;
   --muted:#6b7280;
   --brand:#0f62fe;
@@ -17,6 +17,7 @@
   --hover:#fafafa;
   --thead:#f7f7f7;
   --thead-2:#fffef7;
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
 }
 
 html, body {
@@ -25,21 +26,42 @@ html, body {
   background: var(--bg);
   color: #111827;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
-body{ max-width:1100px; margin:0 auto; padding:16px; }
+body{
+  max-width:1100px;
+  margin:0 auto;
+  padding:16px;
+}
 h1{ margin:12px 0 6px; font-weight:600; }
 
 .muted { color: var(--muted); opacity:.95; font-size:.92rem; }
 
+/* ===== Basic UI wrappers ===== */
+.card{
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  background:#fff;
+  box-shadow: var(--shadow);
+  padding: 10px;
+}
+
+.auth-row{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  flex-wrap:wrap;
+  margin-bottom: 8px;
+}
+
 /* ===== Controls ===== */
 #controls{
   display:grid;
-  grid-template-columns: 1fr 220px 160px;
+  grid-template-columns: 1fr 220px 200px 120px 160px;
   gap: var(--gap);
   align-items: center;
-  margin: 8px 0 14px;
+  margin: 10px 0 10px;
 }
 
 input[type="search"],
@@ -47,7 +69,7 @@ select,
 input[type="number"] {
   padding:10px;
   border:1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 10px;
   width:100%;
   background:#fff;
   color:#111827;
@@ -56,6 +78,38 @@ input[type="number"] {
 input[type="search"]:disabled,
 select:disabled,
 button:disabled { opacity:.6; cursor:not-allowed; }
+
+/* ===== Chips / scroller ===== */
+.chips{
+  display:flex;
+  gap:8px;
+  flex-wrap:nowrap;
+  align-items:center;
+  padding: 8px 6px;
+}
+.scroller{
+  overflow-x:auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  border:1px dashed var(--border);
+  border-radius: 12px;
+  margin: 8px 0 12px;
+}
+.chip{
+  white-space:nowrap;
+  padding:6px 10px;
+  border:1px solid var(--border);
+  border-radius:999px;
+  background:#fff;
+  cursor:pointer;
+  user-select:none;
+  font-size:.92rem;
+}
+.chip.active{
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
+}
 
 /* ===== Buttons ===== */
 .btn{
@@ -73,24 +127,16 @@ button:disabled { opacity:.6; cursor:not-allowed; }
 .btn.primary{ background:var(--brand); color:#fff; border-color:var(--brand); }
 .btn.danger{ background:#fff0f0; border-color:var(--danger); color:#9b1c1c; }
 .btn.ghost{ background:transparent; }
-
-.pill{ padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:#fff; }
+.row-gap{ display:flex; gap:10px; align-items:center; }
 
 /* ===== Table ===== */
-#table-container{
-  margin-top:10px;
-  border:1px solid var(--border);
-  border-radius: var(--radius);
-  overflow:hidden;
-}
-
-table{ width:100%; border-collapse: collapse; }
+#table-container{ margin-top:10px; overflow-x:auto; }
+table{ width:100%; border-collapse: collapse; min-width: 640px; }
 thead th{
   background:var(--thead);
   position:sticky; top:0; z-index:1;
   text-align:left; padding:10px; border-bottom:1px solid var(--border);
-  font-weight:600;
-  font-size:.95rem;
+  font-weight:600; font-size:.95rem;
 }
 tbody td{ padding:8px 10px; border-bottom:1px solid #eee; vertical-align: middle; }
 tbody tr:hover{ background:var(--hover); }
@@ -100,12 +146,7 @@ tbody tr:last-child td { border-bottom: none; }
 .row-actions{ display:flex; gap:8px; align-items:center; }
 
 /* ===== Cart / Selection ===== */
-#cart-section{
-  margin:18px 0;
-  border:1px solid var(--border);
-  border-radius: var(--radius);
-  overflow:hidden;
-}
+#cart-section{ margin:18px 0; overflow:hidden; }
 
 #cart-section header{
   display:flex;
@@ -129,11 +170,13 @@ tbody tr:last-child td { border-bottom: none; }
 }
 #totals .label{ text-align:right; padding-right:8px; color:#111827; }
 #totals .value{ font-weight:700; min-width:140px; text-align:right; }
-
-.inline-note{ font-size:.85em; opacity:.8; margin-left:6px; }
+#totals .grand{ font-size:1.15em; }
 
 /* ===== Labor ===== */
 #labor-list{ padding:10px 12px; border-top:1px dashed var(--border); }
+.labor-head{
+  display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;
+}
 .labor-row{
   display:grid;
   grid-template-columns: 1fr 160px 160px 90px;
@@ -188,7 +231,6 @@ tbody tr:last-child td { border-bottom: none; }
   background: var(--brand);
   animation: barSlide 1.2s infinite ease-in-out;
 }
-
 @keyframes barSlide {
   0%   { transform: translateX(-120%); }
   50%  { transform: translateX(10%); }
@@ -199,13 +241,23 @@ tbody tr:last-child td { border-bottom: none; }
 .hidden{ display:none !important; }
 
 /* ===== Responsive ===== */
-@media (max-width: 800px){
-  #controls{ grid-template-columns: 1fr; gap:8px; }
-  .labor-row{ grid-template-columns: 1fr 140px 140px 90px; }
-  .qty-input{ width:68px; }
+@media (max-width: 900px){
+  #controls{ grid-template-columns: 1fr 1fr; }
 }
-  /* Hides the "Unit (Sell +30%)" column */
-  #cart-table thead th:nth-child(5),
-  #cart-table tbody td:nth-child(5) {
-    display: none;
+@media (max-width: 720px){
+  #controls{ grid-template-columns: 1fr; }
+  .qty-input{ width:68px; }
+  /* Hide Vendor & UOM columns on small screens for readability */
+  #data-table thead th:nth-child(1),
+  #data-table tbody td:nth-child(1),
+  #data-table thead th:nth-child(3),
+  #data-table tbody td:nth-child(3){
+    display:none;
   }
+}
+
+/* Hides the "Unit (Sell +30%)" column in the cart */
+#cart-table thead th:nth-child(5),
+#cart-table tbody td:nth-child(5) {
+  display: none;
+}

@@ -1,41 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <!-- Mobile-first -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Product Portal — Select Items, Add Labor, 30% Margin</title>
-  <link rel="stylesheet" href="style.css">
-  <link rel="icon" type="image/x-icon" href="/favicon.ico">
-  
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
 </head>
 <body>
 
   <!-- Auth/UI -->
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-    <button id="authorize_button" class="btn primary" style="font-size:1.0em;">Sign in to View SKU Database</button>
-    <button id="signout_button" class="btn" style="display:none; font-size:1.0em;">Sign out</button>
+  <div class="auth-row">
+    <button id="authorize_button" class="btn primary">Sign in to View SKU Database</button>
+    <button id="signout_button" class="btn" style="display:none;">Sign out</button>
     <span class="muted">Prices in the product list are hidden. Cart totals include a 30% margin on products and labor.</span>
   </div>
 
-  <h1>Product &amp;VPO Calculator</h1>
+  <h1>Product &amp; VPO Calculator</h1>
 
   <!-- Controls -->
-  <!-- Controls -->
-<div id="controls">
-  <input id="searchInput" type="search" placeholder="Search by SKU or Description…" disabled>
-  <select id="vendorFilter" disabled>
-    <option value="">All vendors</option>
-  </select>
-  <button id="clearFilters" class="btn" disabled>Clear</button>
+  <div id="controls" class="card">
+    <input id="searchInput" type="search" placeholder="Search by SKU or Description…" aria-label="Search by SKU or description" disabled />
+    <select id="vendorFilter" aria-label="Filter by vendor" disabled>
+      <option value="">All vendors</option>
+    </select>
+    <select id="categoryFilter" aria-label="Filter by category" disabled>
+      <option value="">All categories</option>
+    </select>
+    <button id="clearFilters" class="btn" disabled>Clear</button>
 
-  <!-- NEW: Update Pricing -->
-<button id="updatePricing" class="btn" disabled style="display:none;">Update pricing</button>
-</div>
+    <!-- Update Pricing (now visible) -->
+    <button id="updatePricing" class="btn" disabled>Update pricing</button>
+  </div>
 
+  <!-- Category chips (mobile-friendly quick filter) -->
+  <div id="categoryChips" class="chips scroller hidden" aria-label="Quick category filters"></div>
 
   <!-- Data table container -->
-  <div id="table-container" style="display:none;">
-    <!-- Ensure the table exists for JS -->
+  <div id="table-container" class="card" style="display:none;">
     <table id="data-table">
       <thead></thead>
       <tbody></tbody>
@@ -43,13 +46,14 @@
   </div>
 
   <!-- Cart / Selection -->
-  <section id="cart-section" class="hidden">
+  <section id="cart-section" class="card hidden">
     <header>
       <strong>Selected Items</strong>
-      <div style="display:flex;gap:10px;align-items:center;">
+      <div class="row-gap">
         <button id="clearCart" class="btn danger">Clear All</button>
       </div>
     </header>
+
     <table id="cart-table">
       <thead>
         <tr>
@@ -67,7 +71,7 @@
 
     <!-- Labor -->
     <div id="labor-list">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <div class="labor-head">
         <strong>Labor</strong>
         <div>
           <button id="addLabor" class="btn">+ Add Labor Line</button>
@@ -79,15 +83,13 @@
     <!-- Totals -->
     <div id="totals">
       <div class="label">Products Total:</div><div class="value" id="productTotal">$0.00</div>
-      <div class="label">Labor Total <span class="inline-note"></span>:</div><div class="value" id="laborTotal">$0.00</div>
-      <div class="label" style="font-size:1.15em;">Grand Total:</div><div class="value" id="grandTotal" style="font-size:1.15em;">$0.00</div>
+      <div class="label">Labor Total:</div>   <div class="value" id="laborTotal">$0.00</div>
+      <div class="label grand">Grand Total:</div><div class="value grand" id="grandTotal">$0.00</div>
     </div>
   </section>
 
   <!-- Toast -->
-  <div id="toast" style="visibility:hidden; min-width:180px; background-color:#333; color:#fff; text-align:center; border-radius:8px; padding:14px; position:fixed; z-index:9999; left:50%; bottom:30px; font-size:17px; transform:translateX(-50%); transition:visibility 0s, opacity 0.5s linear; opacity:0;">
-    Done
-  </div>
+  <div id="toast" role="status" aria-live="polite">Done</div>
 
   <!-- Loading bar -->
   <div class="loading-bar-overlay" id="loadingBarOverlay" style="display:none;">
