@@ -431,7 +431,7 @@ function renderTable(rows) {
         <td data-label="UOM">${escapeHtml(r.uom)}</td>
         <td data-label="Description">${escapeHtml(r.description)}</td>
         <td data-label="Qty"><input type="number" class="qty-input" min="1" step="1" value="1" id="qty_${idx}"></td>
-        <td data-label="Action" class="row-actions">
+        <td data-label="" class="row-actions">
           <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
         </td>
       </tr>`;
