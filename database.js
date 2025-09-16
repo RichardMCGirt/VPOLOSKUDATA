@@ -13,7 +13,7 @@ const DEFAULT_GID = 0;
 const PRODUCT_TAB_FALLBACK = "DataLoad";   // used if we can't resolve a title from gid
 const PRODUCT_RANGE        = "A1:H10000";  // Vendor..Price Extended columns
 
-// Margin
+// Margin for MATERIALS ONLY
 const MARGIN = 0.30;
 const MARKUP_MULT = 1 + MARGIN;
 
@@ -26,7 +26,7 @@ let gisInited  = false;
 let ALL_ROWS = [];         // full product list from sheet (augmented with .category)
 let FILTERED_ROWS = [];    // after search/vendor/category filters
 const CART = new Map();    // key: sku|vendor -> {row, qty, unitBase, unitSell}
-let LABOR_LINES = [];      // array of {id, name, base}
+let LABOR_LINES = [];      // array of {id, name, rate, qty}  (rate=$/unit, qty integer)
 
 // Cached categories
 let ALL_CATEGORIES = [];   // array of strings
@@ -91,8 +91,6 @@ function scheduleSilentRefresh(delayMs) {
   if (refreshTimerId) clearTimeout(refreshTimerId);
   refreshTimerId = setTimeout(async () => {
     try {
-      // Re-issue silently; if the user is still signed into Google and previously granted scopes,
-      // this returns a fresh token without UI.
       tokenClient.requestAccessToken({ prompt: "" });
     } catch (e) {
       console.warn("[GIS] Silent refresh failed; will require user action if needed.", e);
@@ -120,14 +118,15 @@ function wordMatch(text, kw) {
   return t.includes(k);
 }
 
-// Order matters; Hardware/Fasteners before Lumber so nails don't get scooped by "joist".
+// Fasteners BEFORE Hardware so nails don't get taken by "joist hanger".
 const CATEGORY_RULES = [
+  { name: "Fasteners", includes: [
+      "screw", "screws", "nail", "nails", "ring shank", "finish nail", "common nail", "framing nail",
+      "staple", "staples", "anchor", "bolt", "bolts", "washer", "washers", "collated", "deck screw",
+      "trim screw", "self-tapping"
+    ]},
   { name: "Hardware", includes: [
       "joist hanger", "hanger", "bracket", "connector", "strap", "clip", "plate", "tie", "simpson"
-    ]},
-  { name: "Fasteners", includes: [
-      "screw", "screws", "nail", "nails", "ring shank", "finish nail", "common nail", "framing nail", "staple", "staples", "anchor", "bolt", "bolts", "washer", "washers",
-      "collated", "deck screw", "trim screw", "self-tapping"
     ]},
   { name: "PVC", includes: ["pvc","azek","versatex","cellular pvc","pvc trim","vtp"] },
   { name: "Trim", includes: ["trim","casing","base","mould","molding","crown","shoe","quarter round","brickmould","jamb"] },
@@ -139,6 +138,7 @@ const CATEGORY_RULES = [
   { name: "Doors / Windows", includes: ["door","prehang","slab","window","sash","stile","frame"] },
   { name: "Tools", includes: ["blade","saw","bit","tape","knife","hammer","drill","driver","chalk","level"] },
   { name: "Paint / Finish", includes: ["paint","primer","stain","finish"] },
+  { name: "Electrical", includes: ["electrical","wire","outlet","switch","box"] },
   { name: "Plumbing", includes: ["plumb","pipe","pvc sch","cpvc","pex","fitting","coupling","tee","elbow"] },
   { name: "Lumber", includes: ["lumber","stud","2x","x4","osb","plywood","board","4x8","rim","joist"] },
   { name: "Misc", includes: [] }
@@ -146,7 +146,7 @@ const CATEGORY_RULES = [
 
 function categorizeDescription(desc = "") {
   const d = String(desc || "");
-  if (/\bnails?\b/i.test(d) || /\bring[-\s]?shank\b/i.test(d)) return "Fasteners";
+  if (/\bliquid\s+nails\b/i.test(d)) return "Adhesives / Sealants";
   for (const rule of CATEGORY_RULES) {
     if (rule.includes.some(kw => wordMatch(d, kw))) return rule.name;
   }
@@ -163,9 +163,7 @@ function gapiLoaded() {
     gapiInited = true;
     console.log("[GAPI] Client initialized.");
 
-    // Try to apply a still-valid stored token BEFORE GIS init finishes.
     if (tryLoadStoredToken()) {
-      // We have a token; go ahead and load data without any prompt.
       showEl("table-container", true);
       showEl("loadingBarOverlay", true);
       listSheetData().finally(() => showEl("loadingBarOverlay", false));
@@ -181,10 +179,7 @@ function gisLoaded() {
     client_id: CLIENT_ID,
     scope: SCOPES,
     callback: async (tokenResponse) => {
-      // Any time we successfully get a token (first time OR silent refresh), persist & schedule next
       setAndPersistToken(tokenResponse);
-
-      // If we already had data, this was likely a refresh; otherwise load the sheet now.
       if (!ALL_ROWS.length) {
         try {
           showEl("loadingBarOverlay", true);
@@ -203,14 +198,10 @@ function gisLoaded() {
   gisInited = true;
   console.log("[GIS] OAuth client initialized.");
 
-  // If we don't have a valid stored token, attempt a silent token right away.
   const hasValid = !!gapi.client.getToken()?.access_token;
   if (!hasValid) {
-    try {
-      tokenClient.requestAccessToken({ prompt: "" });
-    } catch (e) {
-      console.warn("Silent token attempt failed (user may need to click Sign in):", e);
-    }
+    try { tokenClient.requestAccessToken({ prompt: "" }); }
+    catch (e) { console.warn("Silent token attempt failed:", e); }
   }
 
   maybeEnableButtons();
@@ -220,23 +211,18 @@ function gisLoaded() {
 function maybeEnableButtons() {
   const authBtn    = document.getElementById("authorize_button");
   const signoutBtn = document.getElementById("signout_button");
+  const updateBtn  = document.getElementById("updatePricing");
 
-  if (!authBtn || !signoutBtn) {
-    console.warn("Authorize/Signout buttons not found in DOM.");
-    return;
-  }
+  if (!authBtn || !signoutBtn) return;
 
-  // "Sign in" — prefer silent first; if that fails, browser will show consent once.
   authBtn.onclick = () => {
     try { tokenClient.requestAccessToken({ prompt: "" }); }
     catch { tokenClient.requestAccessToken({ prompt: "consent" }); }
   };
 
-  // "Sign out" — local only (do NOT revoke to avoid re-consent next visit)
+  // Local sign-out to avoid re-consent later
   signoutBtn.onclick = () => {
     clearLocalToken();
-
-    // Reset UI
     showEl("authorize_button", true);
     showEl("signout_button", false);
 
@@ -247,27 +233,44 @@ function maybeEnableButtons() {
     CART.clear();
     LABOR_LINES = [];
     renderCart();
-    showToast("Signed out (local). You won’t need to re-consent next time.");
-    // Disable filters
+    showToast("Signed out (local).");
     setDisabled("searchInput", true);
     setDisabled("vendorFilter", true);
     setDisabled("categoryFilter", true);
     setDisabled("clearFilters", true);
     showEl("categoryChips", false);
-  }; 
+  };
+
+  if (updateBtn) {
+    updateBtn.disabled = false;
+    updateBtn.onclick = updateAllPricingFromSheet;
+  }
 }
 
-// Optional: Call this only if you want to force Google to forget this app’s grant.
-async function revokeEverywhere() {
+async function updateAllPricingFromSheet() {
   try {
-    const tok = gapi.client.getToken();
-    if (tok?.access_token) {
-      await google.accounts.oauth2.revoke(tok.access_token);
+    showEl("loadingBarOverlay", true);
+    const { rows } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
+    const idx = new Map(rows.map(r => [`${r.sku}|${r.vendor}`, r]));
+
+    let updated = 0;
+    for (const [key, item] of CART.entries()) {
+      const r = idx.get(key);
+      if (!r) continue;
+      item.row = r;                   // refresh row
+      item.unitBase = unitBase(r);    // recompute base
+      item.unitSell = item.unitBase * MARKUP_MULT; // recompute sell
+      updated++;
     }
+
+    renderCart();
+    persistState();
+    showToast(`Updated pricing for ${updated} item${updated === 1 ? "" : "s"}.`);
   } catch (e) {
-    console.warn("Revoke failed:", e);
+    console.error("Update pricing failed:", e);
+    showToast("Failed to update pricing. See console.");
   } finally {
-    clearLocalToken();
+    showEl("loadingBarOverlay", false);
   }
 }
 
@@ -448,7 +451,7 @@ function unitBase(row) {
 }
 
 function unitSell(row) {
-  return unitBase(row) * MARKUP_MULT;
+  return unitBase(row) * MARKUP_MULT; // materials markup
 }
 
 function renderTable(rows) {
@@ -542,10 +545,8 @@ function renderCategoryChips() {
     const chip = ev.target.closest(".chip");
     if (!chip) return;
     ACTIVE_CATEGORY = chip.getAttribute("data-cat") || "";
-    // sync dropdown
     const sel = document.getElementById("categoryFilter");
     if (sel) sel.value = ACTIVE_CATEGORY;
-    // set active class
     Array.from(wrap.querySelectorAll(".chip")).forEach(c => c.classList.toggle("active", c === chip));
     applyFilters();
   };
@@ -564,7 +565,6 @@ function applyFilters() {
     return matchesVendor && matchesCat && matchesQuery;
   });
 
-  // Sort by Category -> Description -> SKU to keep things tidy
   FILTERED_ROWS = filtered.sort((a,b) =>
     (a.category || "").localeCompare(b.category || "") ||
     a.description.localeCompare(b.description) ||
@@ -579,14 +579,14 @@ function addToCart(row, qty) {
   const key = `${row.sku}|${row.vendor}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
-  const us = ub * MARKUP_MULT;
+  const us = ub * MARKUP_MULT; // materials markup stays
   if (existing) {
     existing.qty += qty;
   } else {
     CART.set(key, { row, qty, unitBase: ub, unitSell: us });
   }
   // Ensure there's at least one labor input available
-  if (LABOR_LINES.length === 0) addLaborLine(0);
+  if (LABOR_LINES.length === 0) addLaborLine(0, 1);
 
   renderCart();
   showEl("cart-section", true);
@@ -616,10 +616,10 @@ function clearCart() {
   persistState();
 }
 
-// ====================== Labor ============================
+// ====================== Labor (Qty × Rate, NO MARKUP) ============================
 let _laborIdSeq = 1;
-function addLaborLine(base = 0, name = "Labor line") {
-  LABOR_LINES.push({ id: _laborIdSeq++, base: Number(base) || 0, name });
+function addLaborLine(rate = 0, qty = 1, name = "Labor line") {
+  LABOR_LINES.push({ id: _laborIdSeq++, rate: Number(rate) || 0, qty: Math.max(1, Math.floor(qty || 1)), name });
   showEl("cart-section", true);
   renderCart();
   persistState();
@@ -709,8 +709,9 @@ function renderCart() {
 function calcLaborTotal() {
   let total = 0;
   for (const l of LABOR_LINES) {
-    const sell = (Number(l.base) || 0) * MARKUP_MULT;
-    total += sell;
+    const qty  = Math.max(1, Math.floor(Number(l.qty) || 0));
+    const rate = Math.max(0, Number(l.rate) || 0);
+    total += qty * rate; // NO MARKUP
   }
   return total;
 }
@@ -724,35 +725,45 @@ function renderLabor() {
   existingRows.forEach(el => el.remove());
 
   for (const l of LABOR_LINES) {
-    const sell = (Number(l.base) || 0) * MARKUP_MULT;
     const row = document.createElement("div");
     row.className = "labor-row";
     row.innerHTML = `
       <div><input type="text" class="labor-name" data-id="${l.id}" value="${escapeHtml(l.name || "Labor line")}" placeholder="Labor name"></div>
-      <div><input type="number" min="0" step="0.01" value="${l.base}" class="labor-base" data-id="${l.id}" placeholder="Base cost"></div>
-      <div><input type="text" value="${formatMoney(sell)}" readonly></div>
+      <div><input type="number" min="1" step="1" value="${Math.max(1, Math.floor(l.qty || 1))}" class="labor-qty" data-id="${l.id}" placeholder="Qty"></div>
+      <div><input type="number" min="0" step="0.01" value="${Number(l.rate) || 0}" class="labor-rate" data-id="${l.id}" placeholder="$/unit"></div>
       <div><button class="btn danger remove-labor" data-id="${l.id}">Remove</button></div>
     `;
     wrap.appendChild(row);
   }
 
   wrap.oninput = (ev) => {
-    // base edits
-    const baseEl = ev.target.closest(".labor-base");
-    if (baseEl) {
-      const id  = Number(baseEl.getAttribute("data-id"));
-      const val = Number(baseEl.value);
+    // qty edits
+    const qtyEl = ev.target.closest(".labor-qty");
+    if (qtyEl) {
+      const id  = Number(qtyEl.getAttribute("data-id"));
+      const val = Math.max(1, Math.floor(Number(qtyEl.value) || 1));
       const l   = LABOR_LINES.find(x => x.id === id);
       if (!l) return;
+      l.qty = val;
 
-      l.base = Number.isFinite(val) ? val : 0;
+      // update totals live
+      document.getElementById("laborTotal").textContent = formatMoney(calcLaborTotal());
+      document.getElementById("grandTotal").textContent =
+        formatMoney(calcProductsTotal() + calcLaborTotal());
 
-      // update this row's readonly sell
-      const row = baseEl.closest(".labor-row");
-      const sellReadout = row?.querySelector('div:nth-child(3) input[readonly]');
-      if (sellReadout) sellReadout.value = formatMoney((Number(l.base) || 0) * MARKUP_MULT);
+      persistState();
+      return;
+    }
 
-      // light render path for totals
+    // rate edits
+    const rateEl = ev.target.closest(".labor-rate");
+    if (rateEl) {
+      const id  = Number(rateEl.getAttribute("data-id"));
+      const val = Math.max(0, Number(rateEl.value) || 0);
+      const l   = LABOR_LINES.find(x => x.id === id);
+      if (!l) return;
+      l.rate = val;
+
       document.getElementById("laborTotal").textContent = formatMoney(calcLaborTotal());
       document.getElementById("grandTotal").textContent =
         formatMoney(calcProductsTotal() + calcLaborTotal());
@@ -796,7 +807,7 @@ function updateTotalsOnly() {
   }
   document.getElementById("productTotal").textContent = formatMoney(productTotal);
 
-  // labor
+  // labor (no markup)
   const laborTotal = calcLaborTotal();
   document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
 
@@ -815,7 +826,6 @@ function serializeState() {
       qty: item.qty,
       unitBase: item.unitBase,
       unitSell: item.unitSell,
-      // persist the "row" we used when adding to cart so we can render before sheet loads
       row: {
         vendor: item?.row?.vendor ?? "",
         sku: item?.row?.sku ?? "",
@@ -828,7 +838,8 @@ function serializeState() {
     })),
     labor: LABOR_LINES.map(l => ({
       id: l.id,
-      base: l.base,
+      rate: Number(l.rate) || 0,
+      qty: Math.max(1, Math.floor(Number(l.qty) || 1)),
       name: l.name || "Labor line",
     })),
     laborIdSeq: typeof _laborIdSeq === "number" ? _laborIdSeq : 1,
@@ -867,10 +878,8 @@ function applyRestoreAfterDataLoad() {
     const liveRow = index.get(key) || saved.row || null;
     if (!liveRow) continue;
 
-    // Ensure category attached
     if (!liveRow.category) liveRow.category = categorizeDescription(liveRow.description || "");
 
-    // Recompute unitBase/unitSell with current sheet row if available
     const ub = unitBase(liveRow);
     const us = ub * MARKUP_MULT;
     CART.set(key, {
@@ -881,19 +890,19 @@ function applyRestoreAfterDataLoad() {
     });
   }
 
-  // Restore labor & seq
+  // Restore labor & seq (back-compat: accept old {base} and no {qty})
   LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => ({
     id: l.id,
-    base: Number(l.base) || 0,
+    rate: Number(l.rate ?? l.base ?? 0) || 0,
+    qty: Math.max(1, Math.floor(Number(l.qty ?? 1) || 1)),
     name: l.name || "Labor line",
   })) : [];
   if (typeof _restoreCache.laborIdSeq === "number") _laborIdSeq = _restoreCache.laborIdSeq;
 
-  // Restore active category
   ACTIVE_CATEGORY = _restoreCache.activeCategory || "";
 
   _restoreCache = null;
-  renderCart(); // shows restored cart immediately
+  renderCart();
 }
 
 // Debounce
@@ -946,7 +955,6 @@ function wireControlsOnce() {
   if (vendor) vendor.addEventListener("change", applyFilters);
   if (catSel) catSel.addEventListener("change", () => {
     ACTIVE_CATEGORY = catSel.value || "";
-    // sync chips
     renderCategoryChips();
     applyFilters();
   });
@@ -962,7 +970,7 @@ function wireControlsOnce() {
   });
 
   if (clearCartBtn) clearCartBtn.addEventListener("click", clearCart);
-  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0));
+  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0, 1));
 }
 
 // ====================== Toast/UX/Utils =========================

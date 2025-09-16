@@ -179,13 +179,14 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .labor-row{
   display:grid;
-  grid-template-columns: 1fr 160px 160px 90px;
+  grid-template-columns: 1fr 120px 160px 90px; /* Name | Qty | Rate | Remove */
   gap:8px;
   align-items:center;
   margin-bottom:8px;
 }
-.labor-row input[type="number"]{ padding:8px; border:1px solid var(--border); border-radius: 10px; width:100%; }
-.labor-row input[readonly]{ background:#f9fafb; color:#111827; }
+.labor-row input[type="number"]{
+  padding:8px; border:1px solid var(--border); border-radius: 10px; width:100%;
+}
 
 /* ===== Toast ===== */
 #toast{
