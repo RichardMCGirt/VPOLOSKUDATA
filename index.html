@@ -2,13 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <!-- Mobile-first -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Product Portal — Select Items, Add Labor, 30% Margin</title>
+  <title>Product Portal — Select Items, Add Labor</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
 </head>
 <body>
+
+  <!-- Cart button (fixed, top-right) -->
+  <button id="cartFab" class="cart-fab" aria-label="Open cart">
+    <span class="cart-emoji" aria-hidden="true">🛒</span>
+    <span id="cartCountBadge" class="badge">0</span>
+  </button>
 
   <!-- Auth/UI -->
   <div class="auth-row">
@@ -28,8 +33,7 @@
       <option value="">All categories</option>
     </select>
     <button id="clearFilters" class="btn" disabled>Clear</button>
-
-    <!-- Update Pricing (now visible) -->
+    <button id="updatePricing" class="btn" disabled>Update pricing</button>
   </div>
 
   <!-- Category chips (mobile-friendly quick filter) -->
@@ -59,8 +63,8 @@
           <th>SKU</th>
           <th>Description</th>
           <th>Qty</th>
-          <th>UOM</th>
-          <th>Total</th>
+          <th>Unit (Sell +30%)</th>
+          <th>Line Total</th>
           <th></th>
         </tr>
       </thead>

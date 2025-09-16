@@ -10,10 +10,10 @@ const SCOPES    = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const DEFAULT_GID = 0;
 
 // Table + UI config
-const PRODUCT_TAB_FALLBACK = "DataLoad";   // used if we can't resolve a title from gid
-const PRODUCT_RANGE        = "A1:H10000";  // Vendor..Price Extended columns
+const PRODUCT_TAB_FALLBACK = "DataLoad";
+const PRODUCT_RANGE        = "A1:H10000";
 
-// Margin for MATERIALS ONLY
+// Margin (materials only)
 const MARGIN = 0.30;
 const MARKUP_MULT = 1 + MARGIN;
 
@@ -23,84 +23,50 @@ let gapiInited = false;
 let gisInited  = false;
 
 // Data state
-let ALL_ROWS = [];         // full product list from sheet (augmented with .category)
-let FILTERED_ROWS = [];    // after search/vendor/category filters
+let ALL_ROWS = [];
+let FILTERED_ROWS = [];
 const CART = new Map();    // key: sku|vendor -> {row, qty, unitBase, unitSell}
-let LABOR_LINES = [];      // array of {id, name, rate, qty}  (rate=$/unit, qty integer)
+let LABOR_LINES = [];      // {id, name, rate, qty}
 
 // Cached categories
-let ALL_CATEGORIES = [];   // array of strings
-let ACTIVE_CATEGORY = "";  // pills set this, kept in sync with #categoryFilter
+let ALL_CATEGORIES = [];
+let ACTIVE_CATEGORY = "";
 
 // ======== Token persistence & silent refresh ========
 const TOKEN_STORAGE_KEY = "vanir_gis_token_v1";
 let refreshTimerId = null;
 
-/**
- * Store GIS access token with expiry and push into gapi.
- */
 function setAndPersistToken(tokenResponse) {
   if (!tokenResponse || !tokenResponse.access_token) return;
   const expiresInSec = Number(tokenResponse.expires_in || 3600);
   const expiresAt = Date.now() + expiresInSec * 1000;
-
-  // Persist to localStorage so reloads can skip the prompt
   const stored = { access_token: tokenResponse.access_token, expires_at: expiresAt };
   try { localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(stored)); } catch {}
-
-  // Set into gapi so requests work
   gapi.client.setToken({ access_token: tokenResponse.access_token });
-
-  // Schedule a silent refresh ~5 minutes before expiry (min clamp = 10s)
   scheduleSilentRefresh(Math.max(expiresAt - Date.now() - 5 * 60 * 1000, 10 * 1000));
-
-  // Flip UI to "signed in"
   showEl("authorize_button", false);
   showEl("signout_button", true);
 }
-
-/**
- * Load stored token if still valid; returns true if applied.
- */
 function tryLoadStoredToken() {
   let raw;
   try { raw = localStorage.getItem(TOKEN_STORAGE_KEY); } catch {}
   if (!raw) return false;
-
-  let obj;
-  try { obj = JSON.parse(raw); } catch { return false; }
+  let obj; try { obj = JSON.parse(raw); } catch { return false; }
   if (!obj || !obj.access_token || !obj.expires_at) return false;
-
-  const skewMs = 10 * 1000; // be safe by 10s
+  const skewMs = 10 * 1000;
   if (Date.now() >= (obj.expires_at - skewMs)) return false;
-
-  // Apply
   gapi.client.setToken({ access_token: obj.access_token });
   showEl("authorize_button", false);
   showEl("signout_button", true);
-
-  // Schedule refresh for the remaining lifetime
   scheduleSilentRefresh(Math.max(obj.expires_at - Date.now() - 5 * 60 * 1000, 10 * 1000));
   return true;
 }
-
-/**
- * Schedule a silent refresh using GIS (no prompt).
- */
 function scheduleSilentRefresh(delayMs) {
   if (refreshTimerId) clearTimeout(refreshTimerId);
-  refreshTimerId = setTimeout(async () => {
-    try {
-      tokenClient.requestAccessToken({ prompt: "" });
-    } catch (e) {
-      console.warn("[GIS] Silent refresh failed; will require user action if needed.", e);
-    }
+  refreshTimerId = setTimeout(() => {
+    try { tokenClient.requestAccessToken({ prompt: "" }); } catch {}
   }, delayMs);
 }
-
-/**
- * Clear local token only (do NOT revoke with Google by default; avoids re-consent next visit).
- */
 function clearLocalToken() {
   try { localStorage.removeItem(TOKEN_STORAGE_KEY); } catch {}
   try { gapi.client.setToken(null); } catch {}
@@ -117,8 +83,6 @@ function wordMatch(text, kw) {
   if (boundary.test(t)) return true;
   return t.includes(k);
 }
-
-// Fasteners BEFORE Hardware so nails don't get taken by "joist hanger".
 const CATEGORY_RULES = [
   { name: "Fasteners", includes: [
       "screw", "screws", "nail", "nails", "ring shank", "finish nail", "common nail", "framing nail",
@@ -143,7 +107,6 @@ const CATEGORY_RULES = [
   { name: "Lumber", includes: ["lumber","stud","2x","x4","osb","plywood","board","4x8","rim","joist"] },
   { name: "Misc", includes: [] }
 ];
-
 function categorizeDescription(desc = "") {
   const d = String(desc || "");
   if (/\bliquid\s+nails\b/i.test(d)) return "Adhesives / Sealants";
@@ -161,14 +124,11 @@ function gapiLoaded() {
       discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
     });
     gapiInited = true;
-    console.log("[GAPI] Client initialized.");
-
     if (tryLoadStoredToken()) {
       showEl("table-container", true);
       showEl("loadingBarOverlay", true);
       listSheetData().finally(() => showEl("loadingBarOverlay", false));
     }
-
     maybeEnableButtons();
   });
 }
@@ -196,14 +156,12 @@ function gisLoaded() {
     },
   });
   gisInited = true;
-  console.log("[GIS] OAuth client initialized.");
 
   const hasValid = !!gapi.client.getToken()?.access_token;
   if (!hasValid) {
     try { tokenClient.requestAccessToken({ prompt: "" }); }
     catch (e) { console.warn("Silent token attempt failed:", e); }
   }
-
   maybeEnableButtons();
 }
 
@@ -212,38 +170,50 @@ function maybeEnableButtons() {
   const authBtn    = document.getElementById("authorize_button");
   const signoutBtn = document.getElementById("signout_button");
   const updateBtn  = document.getElementById("updatePricing");
+  const cartFab    = document.getElementById("cartFab");
 
-  if (!authBtn || !signoutBtn) return;
+  if (authBtn) {
+    authBtn.onclick = () => {
+      try { tokenClient.requestAccessToken({ prompt: "" }); }
+      catch { tokenClient.requestAccessToken({ prompt: "consent" }); }
+    };
+  }
 
-  authBtn.onclick = () => {
-    try { tokenClient.requestAccessToken({ prompt: "" }); }
-    catch { tokenClient.requestAccessToken({ prompt: "consent" }); }
-  };
+  if (signoutBtn) {
+    signoutBtn.onclick = () => {
+      clearLocalToken();
+      showEl("authorize_button", true);
+      showEl("signout_button", false);
 
-  // Local sign-out to avoid re-consent later
-  signoutBtn.onclick = () => {
-    clearLocalToken();
-    showEl("authorize_button", true);
-    showEl("signout_button", false);
-
-    const tbody = document.querySelector("#data-table tbody");
-    if (tbody) tbody.innerHTML = "";
-    ALL_ROWS = [];
-    FILTERED_ROWS = [];
-    CART.clear();
-    LABOR_LINES = [];
-    renderCart();
-    showToast("Signed out (local).");
-    setDisabled("searchInput", true);
-    setDisabled("vendorFilter", true);
-    setDisabled("categoryFilter", true);
-    setDisabled("clearFilters", true);
-    showEl("categoryChips", false);
-  };
+      const tbody = document.querySelector("#data-table tbody");
+      if (tbody) tbody.innerHTML = "";
+      ALL_ROWS = [];
+      FILTERED_ROWS = [];
+      CART.clear();
+      LABOR_LINES = [];
+      renderCart();
+      updateCartBadge();
+      showToast("Signed out (local).");
+      setDisabled("searchInput", true);
+      setDisabled("vendorFilter", true);
+      setDisabled("categoryFilter", true);
+      setDisabled("clearFilters", true);
+      showEl("categoryChips", false);
+    };
+  }
 
   if (updateBtn) {
     updateBtn.disabled = false;
     updateBtn.onclick = updateAllPricingFromSheet;
+  }
+
+  if (cartFab) {
+    cartFab.onclick = () => {
+      // ensure cart is visible, then scroll to cart table body
+      showEl("cart-section", true);
+      const target = document.querySelector("#cart-table tbody") || document.getElementById("cart-section");
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
   }
 }
 
@@ -257,9 +227,9 @@ async function updateAllPricingFromSheet() {
     for (const [key, item] of CART.entries()) {
       const r = idx.get(key);
       if (!r) continue;
-      item.row = r;                   // refresh row
-      item.unitBase = unitBase(r);    // recompute base
-      item.unitSell = item.unitBase * MARKUP_MULT; // recompute sell
+      item.row = r;
+      item.unitBase = unitBase(r);
+      item.unitSell = item.unitBase * MARKUP_MULT;
       updated++;
     }
 
@@ -287,7 +257,6 @@ const HEADER_ALIASES = {
 };
 
 function norm(s){ return String(s ?? "").trim(); }
-
 function headerKey(name) {
   const n = norm(name).toLowerCase();
   for (const [key, variants] of Object.entries(HEADER_ALIASES)) {
@@ -295,7 +264,6 @@ function headerKey(name) {
   }
   return null;
 }
-
 function parseNumber(x) {
   const s = norm(x).replace(/\$/g, "").replace(/,/g, "");
   if (!s) return null;
@@ -303,7 +271,6 @@ function parseNumber(x) {
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
-
 function makeSkuHelper(sku, vendor) {
   const v = norm(vendor) || "N/A";
   return `${norm(sku)}${v}`;
@@ -327,15 +294,12 @@ async function getSheetTitleByGid(spreadsheetId, gidNumber) {
 
 // Main: fetch + transform
 async function fetchProductSheet(spreadsheetId, gidNumber = null) {
-  // 1) Determine the tab title
   let title = null;
   if (gidNumber !== null && gidNumber !== undefined) {
     title = await getSheetTitleByGid(spreadsheetId, gidNumber);
   }
   if (!title) title = PRODUCT_TAB_FALLBACK;
-  console.log(`[Sheets] Using tab "${title}"`);
 
-  // 2) Read values
   const res = await gapi.client.sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${title}'!${PRODUCT_RANGE}`,
@@ -343,7 +307,7 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
   const values = res.result.values || [];
   if (!values.length) return { rows: [], bySku: {}, bySkuVendor: {} };
 
-  // 3) Identify header row (first row that looks like headers)
+  // Identify header row
   let headerRowIdx = 0;
   for (let r = 0; r < Math.min(5, values.length); r++) {
     const row = (values[r] || []).map(x => norm(x).toLowerCase());
@@ -354,18 +318,13 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
   const headerRow = values[headerRowIdx] || [];
   const dataRows  = values.slice(headerRowIdx + 1);
 
-  // 4) Map columns using tolerant aliases
+  // Map columns
   const colMap = {};
   headerRow.forEach((h, idx) => {
     const key = headerKey(h);
-    if (key && !(key in colMap)) colMap[key] = idx; // first match wins
+    if (key && !(key in colMap)) colMap[key] = idx;
   });
 
-  if (colMap.sku == null || colMap.description == null) {
-    console.warn("SKU/Description not detected. Current colMap:", colMap);
-  }
-
-  // 5) Build row objects
   const rows = [];
   for (const row of dataRows) {
     const vendor  = colMap.vendor        != null ? row[colMap.vendor]        : "";
@@ -378,9 +337,8 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     let   px      = colMap.priceExtended != null ? parseNumber(row[colMap.priceExtended]) : null;
 
     const cleanSku = norm(sku);
-    if (!cleanSku) continue; // skip empty lines
+    if (!cleanSku) continue;
 
-    // Compute extended price if missing/invalid
     if (px == null) {
       const m = (mult == null ? 1 : mult);
       const c = (cost == null ? 0 : cost);
@@ -401,13 +359,12 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     });
   }
 
-  // 6) Lookups (if you need programmatic access elsewhere)
   const bySku = Object.create(null);
   const bySkuVendor = Object.create(null);
   for (const r of rows) {
     const key = `${r.sku}|${r.vendor}`;
     bySkuVendor[key] = r;
-    if (!bySku[r.sku]) bySku[r.sku] = r; // first wins
+    if (!bySku[r.sku]) bySku[r.sku] = r;
   }
 
   return { rows, bySku, bySkuVendor, title };
@@ -417,7 +374,6 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
 function ensureTable() {
   let table = document.getElementById("data-table");
   if (!table) {
-    console.warn("#data-table not found. Creating one inside #table-container.");
     const container = document.getElementById("table-container") || document.body;
     table = document.createElement("table");
     table.id = "data-table";
@@ -432,7 +388,6 @@ function formatMoney(n) {
   if (!Number.isFinite(x)) return "$0.00";
   return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2, style: "currency", currency: "USD" });
 }
-
 function escapeHtml(s) {
   return String(s ?? "")
     .replaceAll("&","&amp;")
@@ -441,18 +396,13 @@ function escapeHtml(s) {
     .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
 }
-
 function unitBase(row) {
-  // Use priceExtended if available; otherwise cost * uomMultiple
   const mult = row.uomMultiple == null ? 1 : Number(row.uomMultiple) || 1;
   const px = (row.priceExtended != null ? Number(row.priceExtended) : null);
   const cost = (row.cost != null ? Number(row.cost) : 0);
   return (px != null ? px : (mult * cost));
 }
-
-function unitSell(row) {
-  return unitBase(row) * MARKUP_MULT; // materials markup
-}
+function unitSell(row) { return unitBase(row) * MARKUP_MULT; }
 
 function renderTable(rows) {
   const table = ensureTable();
@@ -470,17 +420,18 @@ function renderTable(rows) {
         <th style="width:120px;"></th>
       </tr>`;
   }
+
   if (tbody) {
     tbody.innerHTML = rows.map((r, idx) => {
       const key = `${r.sku}|${r.vendor}`;
       return `
       <tr data-key="${escapeHtml(key)}">
-        <td>${escapeHtml(r.vendor)}</td>
-        <td>${escapeHtml(r.sku)}</td>
-        <td>${escapeHtml(r.uom)}</td>
-        <td>${escapeHtml(r.description)}</td>
-        <td><input type="number" class="qty-input" min="1" step="1" value="1" id="qty_${idx}"></td>
-        <td class="row-actions">
+        <td data-label="Vendor">${escapeHtml(r.vendor)}</td>
+        <td data-label="SKU">${escapeHtml(r.sku)}</td>
+        <td data-label="UOM">${escapeHtml(r.uom)}</td>
+        <td data-label="Description">${escapeHtml(r.description)}</td>
+        <td data-label="Qty"><input type="number" class="qty-input" min="1" step="1" value="1" id="qty_${idx}"></td>
+        <td data-label="Action" class="row-actions">
           <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
         </td>
       </tr>`;
@@ -506,25 +457,22 @@ function populateVendorFilter(rows) {
   const vendors = Array.from(new Set(rows.map(r => r.vendor).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
   sel.innerHTML = `<option value="">All vendors</option>` + vendors.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
 }
-
 function buildCategories(rows) {
   const s = new Set(rows.map(r => r.category || "Misc"));
   const categories = Array.from(s).sort((a,b)=>a.localeCompare(b));
   ALL_CATEGORIES = categories;
   return categories;
 }
-
 function populateCategoryFilter(rows) {
   const sel = document.getElementById("categoryFilter");
   if (!sel) return;
   const cats = buildCategories(rows);
   sel.innerHTML = `<option value="">All categories</option>` + cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
 }
-
 function renderCategoryChips() {
   const wrap = document.getElementById("categoryChips");
   if (!wrap) return;
-  wrap.innerHTML = ""; // reset
+  wrap.innerHTML = "";
   const all = document.createElement("button");
   all.className = "chip" + (ACTIVE_CATEGORY ? "" : " active");
   all.textContent = "All";
@@ -540,7 +488,6 @@ function renderCategoryChips() {
   }
   showEl("categoryChips", true);
 
-  // chip clicks
   wrap.onclick = (ev) => {
     const chip = ev.target.closest(".chip");
     if (!chip) return;
@@ -551,7 +498,6 @@ function renderCategoryChips() {
     applyFilters();
   };
 }
-
 function applyFilters() {
   const q    = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
   const vSel = (document.getElementById("vendorFilter")?.value || "");
@@ -579,44 +525,43 @@ function addToCart(row, qty) {
   const key = `${row.sku}|${row.vendor}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
-  const us = ub * MARKUP_MULT; // materials markup stays
+  const us = ub * MARKUP_MULT;
   if (existing) {
     existing.qty += qty;
   } else {
     CART.set(key, { row, qty, unitBase: ub, unitSell: us });
   }
-  // Ensure there's at least one labor input available
   if (LABOR_LINES.length === 0) addLaborLine(0, 1);
-
   renderCart();
   showEl("cart-section", true);
   persistState();
+  updateCartBadge();
 }
-
 function updateCartQty(key, qty) {
   const item = CART.get(key);
   if (!item) return;
   item.qty = Math.max(1, Math.floor(qty || 1));
   renderCart();
   persistState();
+  updateCartBadge();
 }
-
 function removeCartItem(key) {
   if (!CART.has(key)) return;
   CART.delete(key);
   renderCart();
   if (CART.size === 0 && LABOR_LINES.length === 0) showEl("cart-section", false);
   persistState();
+  updateCartBadge();
 }
-
 function clearCart() {
   CART.clear();
   renderCart();
   if (LABOR_LINES.length === 0) showEl("cart-section", false);
   persistState();
+  updateCartBadge();
 }
 
-// ====================== Labor (Qty × Rate, NO MARKUP) ============================
+// ====================== Labor (Qty × Rate, NO MARKUP) ====================
 let _laborIdSeq = 1;
 function addLaborLine(rate = 0, qty = 1, name = "Labor line") {
   LABOR_LINES.push({ id: _laborIdSeq++, rate: Number(rate) || 0, qty: Math.max(1, Math.floor(qty || 1)), name });
@@ -624,7 +569,6 @@ function addLaborLine(rate = 0, qty = 1, name = "Labor line") {
   renderCart();
   persistState();
 }
-
 function removeLaborLine(id) {
   LABOR_LINES = LABOR_LINES.filter(l => l.id !== id);
   renderCart();
@@ -680,16 +624,16 @@ function renderCart() {
 
     item.qty = qty;
 
-    // Update just this row’s line total cell (6th column)
     const tr = input.closest("tr");
     const lineCell = tr?.querySelector("td:nth-child(6)");
     if (lineCell) lineCell.textContent = formatMoney(item.unitSell * item.qty);
 
     updateTotalsOnly();
     persistState();
+    updateCartBadge();
   };
 
-  // Remove material items via delegated click handler
+  // Remove material items
   tbody.onclick = (ev) => {
     const btn = ev.target.closest(".remove-item");
     if (!btn) return;
@@ -704,6 +648,8 @@ function renderCart() {
   const laborTotal = calcLaborTotal();
   document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
   document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
+
+  updateCartBadge();
 }
 
 function calcLaborTotal() {
@@ -720,7 +666,6 @@ function renderLabor() {
   const wrap = document.getElementById("labor-list");
   if (!wrap) return;
 
-  // Clear existing rows (keeping header area)
   const existingRows = wrap.querySelectorAll(".labor-row");
   existingRows.forEach(el => el.remove());
 
@@ -737,7 +682,6 @@ function renderLabor() {
   }
 
   wrap.oninput = (ev) => {
-    // qty edits
     const qtyEl = ev.target.closest(".labor-qty");
     if (qtyEl) {
       const id  = Number(qtyEl.getAttribute("data-id"));
@@ -745,17 +689,13 @@ function renderLabor() {
       const l   = LABOR_LINES.find(x => x.id === id);
       if (!l) return;
       l.qty = val;
-
-      // update totals live
       document.getElementById("laborTotal").textContent = formatMoney(calcLaborTotal());
       document.getElementById("grandTotal").textContent =
         formatMoney(calcProductsTotal() + calcLaborTotal());
-
       persistState();
       return;
     }
 
-    // rate edits
     const rateEl = ev.target.closest(".labor-rate");
     if (rateEl) {
       const id  = Number(rateEl.getAttribute("data-id"));
@@ -763,24 +703,18 @@ function renderLabor() {
       const l   = LABOR_LINES.find(x => x.id === id);
       if (!l) return;
       l.rate = val;
-
       document.getElementById("laborTotal").textContent = formatMoney(calcLaborTotal());
       document.getElementById("grandTotal").textContent =
         formatMoney(calcProductsTotal() + calcLaborTotal());
-
       persistState();
       return;
     }
 
-    // name edits
     const nameEl = ev.target.closest(".labor-name");
     if (nameEl) {
       const id = Number(nameEl.getAttribute("data-id"));
       const l  = LABOR_LINES.find(x => x.id === id);
-      if (l) {
-        l.name = nameEl.value;
-        persistState();
-      }
+      if (l) { l.name = nameEl.value; persistState(); }
     }
   };
 
@@ -792,32 +726,29 @@ function renderLabor() {
   };
 }
 
-// helpers used above
+// helpers
 function calcProductsTotal() {
   let productTotal = 0;
   for (const [, item] of CART.entries()) productTotal += item.unitSell * item.qty;
   return productTotal;
 }
-
 function updateTotalsOnly() {
-  // products
   let productTotal = 0;
-  for (const [, item] of CART.entries()) {
-    productTotal += item.unitSell * item.qty;
-  }
+  for (const [, item] of CART.entries()) productTotal += item.unitSell * item.qty;
   document.getElementById("productTotal").textContent = formatMoney(productTotal);
-
-  // labor (no markup)
   const laborTotal = calcLaborTotal();
   document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
-
-  // grand
   document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
 }
+function updateCartBadge() {
+  const badge = document.getElementById("cartCountBadge");
+  if (!badge) return;
+  badge.textContent = String(CART.size); // number of DISTINCT records/lines
+}
 
-// ========= Persistence (localStorage) =========
+// ========= Persistence =========
 const STORAGE_KEY = "vanir_cart_v1";
-let _restoreCache = null; // staged restore until Sheet rows are loaded
+let _restoreCache = null;
 
 function serializeState() {
   return {
@@ -846,51 +777,28 @@ function serializeState() {
     activeCategory: ACTIVE_CATEGORY
   };
 }
-
 function persistState() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
-  } catch (e) {
-    console.warn("persistState failed:", e);
-  }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState())); } catch (e) {}
 }
-
 function stageRestoreFromLocalStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     _restoreCache = raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    console.warn("stageRestoreFromLocalStorage failed:", e);
-    _restoreCache = null;
-  }
+  } catch (e) { _restoreCache = null; }
 }
-
 function applyRestoreAfterDataLoad() {
-  if (!_restoreCache) return;
-
-  // Build an index of current sheet rows by key sku|vendor
+  if (!_restoreCache) { updateCartBadge(); return; }
   const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}`, r]));
-
-  // Restore cart
   CART.clear();
   for (const saved of _restoreCache.cart || []) {
     const key = saved.key || `${saved?.row?.sku}|${saved?.row?.vendor}`;
     const liveRow = index.get(key) || saved.row || null;
     if (!liveRow) continue;
-
     if (!liveRow.category) liveRow.category = categorizeDescription(liveRow.description || "");
-
     const ub = unitBase(liveRow);
     const us = ub * MARKUP_MULT;
-    CART.set(key, {
-      row: liveRow,
-      qty: Math.max(1, Math.floor(saved.qty || 1)),
-      unitBase: ub,
-      unitSell: us,
-    });
+    CART.set(key, { row: liveRow, qty: Math.max(1, Math.floor(saved.qty || 1)), unitBase: ub, unitSell: us });
   }
-
-  // Restore labor & seq (back-compat: accept old {base} and no {qty})
   LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => ({
     id: l.id,
     rate: Number(l.rate ?? l.base ?? 0) || 0,
@@ -898,41 +806,27 @@ function applyRestoreAfterDataLoad() {
     name: l.name || "Labor line",
   })) : [];
   if (typeof _restoreCache.laborIdSeq === "number") _laborIdSeq = _restoreCache.laborIdSeq;
-
   ACTIVE_CATEGORY = _restoreCache.activeCategory || "";
-
   _restoreCache = null;
   renderCart();
+  updateCartBadge();
 }
 
 // Debounce
-function debounce(fn, ms) {
-  let t;
-  return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
-  };
-}
+function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
 
 // ====================== Main Flow ========================
 async function listSheetData() {
   const { rows } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
-
-  // Attach to global & build categories
   ALL_ROWS = rows;
   buildCategories(ALL_ROWS);
   populateVendorFilter(ALL_ROWS);
   populateCategoryFilter(ALL_ROWS);
-
-  // restore saved cart/labor now that ALL_ROWS is ready
   applyRestoreAfterDataLoad();
-
-  // controls enabled
   setDisabled("searchInput", false);
   setDisabled("vendorFilter", false);
   setDisabled("categoryFilter", false);
   setDisabled("clearFilters", false);
-
   wireControlsOnce();
   renderCategoryChips();
   applyFilters();
@@ -987,7 +881,6 @@ function showToast(message = "Done") {
     el.style.visibility = "hidden";
   }, 1800);
 }
-
 function showEl(id, show) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -998,23 +891,20 @@ function showEl(id, show) {
     el.classList.add("hidden");
   }
 }
-
 function setDisabled(id, isDisabled) {
   const el = document.getElementById(id);
   if (!el) return;
   el.disabled = !!isDisabled;
 }
 
-// Auto-refresh every 5 minutes if signed in: silently re-pulls data (not auth)
+// Auto-refresh every 5 minutes if signed in
 setInterval(() => {
   const signedIn = !!gapi.client.getToken()?.access_token;
   if (signedIn) {
     showEl("loadingBarOverlay", true);
     listSheetData()
       .then(() => showToast("Auto-refreshed."))
-      .finally(() => {
-        showEl("loadingBarOverlay", false);
-      });
+      .finally(() => { showEl("loadingBarOverlay", false); });
   }
 }, 300000);
 
@@ -1023,6 +913,6 @@ document.addEventListener("DOMContentLoaded", () => {
   stageRestoreFromLocalStorage();
 });
 
-// Expose init functions for script onload callbacks
+// Expose init functions
 window.gapiLoaded = gapiLoaded;
 window.gisLoaded  = gisLoaded;
