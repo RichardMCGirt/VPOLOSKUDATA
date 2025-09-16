@@ -72,12 +72,50 @@ function gisLoaded() {
   gisInited = true;
   console.log("[GIS] OAuth client initialized.");
   maybeEnableButtons();
+  // Try silent token (no forced picker if already granted)
+try {
+  if (!gapi.client.getToken()?.access_token && tokenClient) {
+    tokenRequestInFlight = true;
+    tokenClient.requestAccessToken({ prompt: "" });
+  }
+} catch (e) {
+  console.warn("Silent token attempt failed:", e);
+}
+
+}
+
+async function updateAllPricingFromSheet() {
+  try {
+    showEl("loadingBarOverlay", true);
+    const { rows } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
+    const idx = new Map(rows.map(r => [`${r.sku}|${r.vendor}`, r]));
+
+    let updated = 0;
+    for (const [key, item] of CART.entries()) {
+      const r = idx.get(key);
+      if (!r) continue;
+      item.row = r;                   // refresh row
+      item.unitBase = unitBase(r);    // recompute base
+      item.unitSell = item.unitBase * MARKUP_MULT; // recompute sell
+      updated++;
+    }
+
+    renderCart();
+    persistState();
+    showToast(`Updated pricing for ${updated} item${updated === 1 ? "" : "s"}.`);
+  } catch (e) {
+    console.error("Update pricing failed:", e);
+    showToast("Failed to update pricing. See console.");
+  } finally {
+    showEl("loadingBarOverlay", false);
+  }
 }
 
 // =============== Buttons/Handlers =========================
 function maybeEnableButtons() {
   const authBtn    = document.getElementById("authorize_button");
   const signoutBtn = document.getElementById("signout_button");
+  const updateBtn  = document.getElementById("updatePricing");
 
   if (!authBtn || !signoutBtn) {
     console.warn("Authorize/Signout buttons not found in DOM.");
@@ -92,15 +130,22 @@ function maybeEnableButtons() {
       }
       tokenRequestInFlight = true;
       console.log("[Buttons] Authorize clicked.");
-      // Prompt set to "" means "no forced account picker if already known"
       tokenClient.requestAccessToken({ prompt: "" });
     };
     signoutBtn.onclick = handleSignoutClick;
+
+    // Enable Update Pricing when signed in (or enable here if you prefer)
+    if (updateBtn) {
+      updateBtn.disabled = false;
+      updateBtn.onclick = updateAllPricingFromSheet;
+    }
+
     console.log("[Buttons] Handlers attached.");
   } else {
     console.log("[Buttons] Waiting for GAPI/GIS init...");
   }
 }
+
 
 function handleSignoutClick() {
   const tokenObj = gapi.client.getToken();
@@ -374,6 +419,7 @@ function applyFilters() {
 }
 
 // ====================== Cart ============================
+// ====================== Cart ============================
 function addToCart(row, qty) {
   const key = `${row.sku}|${row.vendor}`;
   const existing = CART.get(key);
@@ -390,6 +436,7 @@ function addToCart(row, qty) {
   }
   renderCart();
   showEl("cart-section", true);
+  persistState(); // NEW
 }
 
 function updateCartQty(key, qty) {
@@ -397,6 +444,7 @@ function updateCartQty(key, qty) {
   if (!item) return;
   item.qty = Math.max(1, Math.floor(qty || 1));
   renderCart();
+  persistState(); // NEW
 }
 
 function removeCartItem(key) {
@@ -405,66 +453,226 @@ function removeCartItem(key) {
   if (CART.size === 0 && LABOR_LINES.length === 0) {
     showEl("cart-section", false);
   }
+  persistState(); // NEW
 }
 
 function clearCart() {
   CART.clear();
   renderCart();
   if (LABOR_LINES.length === 0) showEl("cart-section", false);
+  persistState(); // NEW
 }
+
+// ====================== Labor ============================
+let _laborIdSeq = 1;
+function addLaborLine(base = 0, name = "Labor line") {
+  LABOR_LINES.push({ id: _laborIdSeq++, base: Number(base) || 0, name });
+  showEl("cart-section", true);
+  renderCart();
+  persistState(); // NEW
+}
+
+function removeLaborLine(id) {
+  LABOR_LINES = LABOR_LINES.filter(l => l.id !== id);
+  renderCart();
+  if (CART.size === 0 && LABOR_LINES.length === 0) {
+    showEl("cart-section", false);
+  }
+  persistState(); // NEW
+}
+
 
 function renderCart() {
   const tbody = document.querySelector("#cart-table tbody");
   if (!tbody) return;
+
   const rows = [];
   let productTotal = 0;
 
   for (const [key, item] of CART.entries()) {
     const line = item.unitSell * item.qty;
     productTotal += line;
+
     rows.push(`
       <tr data-key="${escapeHtml(key)}">
         <td>${escapeHtml(item.row.vendor)}</td>
         <td>${escapeHtml(item.row.sku)}</td>
         <td>${escapeHtml(item.row.description)}</td>
         <td>
-          <input type="number" class="qty-input cart-qty" min="1" step="1" value="${item.qty}" data-key="${escapeHtml(key)}">
+          <input
+            type="number"
+            class="qty-input cart-qty"
+            min="1"
+            step="1"
+            value="${item.qty}"
+            data-key="${escapeHtml(key)}">
         </td>
         <td>${formatMoney(item.unitSell)}</td>
         <td>${formatMoney(line)}</td>
-        <td><button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button></td>
+        <td>
+          <button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button>
+        </td>
       </tr>
     `);
   }
+
   tbody.innerHTML = rows.join("");
 
-  // Wire qty + remove
- tbody.oninput = (ev) => {
-  const input = ev.target.closest(".cart-qty");
-  if (!input) return;
+  // Update qty (incremental: update the line total + totals only)
+  tbody.oninput = (ev) => {
+    const input = ev.target.closest(".cart-qty");
+    if (!input) return;
 
-  const key = input.getAttribute("data-key");
-  const qty = Math.max(1, Math.floor(Number(input.value) || 1));
-  const item = CART.get(key);
-  if (!item) return;
+    const key = input.getAttribute("data-key");
+    const qty = Math.max(1, Math.floor(Number(input.value) || 1));
+    const item = CART.get(key);
+    if (!item) return;
 
-  item.qty = qty;
+    item.qty = qty;
 
-  // Update just this row’s Line Total cell (6th column)
-  const tr = input.closest("tr");
-  const lineCell = tr?.querySelector("td:nth-child(6)");
-  if (lineCell) lineCell.textContent = formatMoney(item.unitSell * item.qty);
+    // Update just this row’s line total cell (6th column)
+    const tr = input.closest("tr");
+    const lineCell = tr?.querySelector("td:nth-child(6)");
+    if (lineCell) lineCell.textContent = formatMoney(item.unitSell * item.qty);
 
-  updateTotalsOnly();
-};
+    updateTotalsOnly();
+    persistState();
+  };
 
+  // ✅ NEW: remove material items via delegated click handler
+  tbody.onclick = (ev) => {
+    const btn = ev.target.closest(".remove-item");
+    if (!btn) return;
+    const key = btn.getAttribute("data-key");
+    if (!key) return;
+
+    removeCartItem(key);   // re-renders + persists
+  };
+
+  // Labor + totals
+  renderLabor();
+  document.getElementById("productTotal").textContent = formatMoney(productTotal);
+  const laborTotal = calcLaborTotal();
+  document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
+  document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
+}
+
+function removeCartItem(key) {
+  if (!CART.has(key)) return;
+  CART.delete(key);
+
+  renderCart();
+
+  if (CART.size === 0 && LABOR_LINES.length === 0) {
+    showEl("cart-section", false);
+  }
+  persistState();
+}
+
+
+
+// ========= Persistence (localStorage) =========
+const STORAGE_KEY = "vanir_cart_v1";
+let _restoreCache = null; // staged restore until Sheet rows are loaded
+
+function serializeState() {
+  return {
+    cart: Array.from(CART.entries()).map(([key, item]) => ({
+      key,
+      qty: item.qty,
+      unitBase: item.unitBase,
+      unitSell: item.unitSell,
+      // persist the "row" we used when adding to cart so we can render before sheet loads
+      row: {
+        vendor: item?.row?.vendor ?? "",
+        sku: item?.row?.sku ?? "",
+        uom: item?.row?.uom ?? "",
+        description: item?.row?.description ?? "",
+        // keep any price-ish columns you parse in unitBase(row)
+        price: item?.row?.price, 
+        priceExtended: item?.row?.priceExtended,
+      },
+    })),
+    labor: LABOR_LINES.map(l => ({
+      id: l.id,
+      base: l.base,
+      name: l.name || "Labor line",
+    })),
+    laborIdSeq: typeof _laborIdSeq === "number" ? _laborIdSeq : 1,
+  };
+}
+
+function persistState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState()));
+  } catch (e) {
+    console.warn("persistState failed:", e);
+  }
+}
+
+function stageRestoreFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    _restoreCache = raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.warn("stageRestoreFromLocalStorage failed:", e);
+    _restoreCache = null;
+  }
+}
+
+function applyRestoreAfterDataLoad() {
+  if (!_restoreCache) return;
+
+  // Build an index of current sheet rows by key sku|vendor
+  const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}`, r]));
+
+  // Restore cart
+  CART.clear();
+  for (const saved of _restoreCache.cart || []) {
+    const key = saved.key || `${saved?.row?.sku}|${saved?.row?.vendor}`;
+    const liveRow = index.get(key) || saved.row || null;
+    if (!liveRow) continue;
+
+    // Recompute unitBase/unitSell with current sheet row if available
+    const ub = unitBase(liveRow);
+    const us = ub * MARKUP_MULT;
+    CART.set(key, {
+      row: liveRow,
+      qty: Math.max(1, Math.floor(saved.qty || 1)),
+      unitBase: ub,
+      unitSell: us,
+    });
+  }
+
+  // Restore labor
+  LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => ({
+    id: l.id,
+    base: Number(l.base) || 0,
+    name: l.name || "Labor line",
+  })) : [];
+  if (typeof _restoreCache.laborIdSeq === "number") {
+    _laborIdSeq = _restoreCache.laborIdSeq;
+  }
+
+  _restoreCache = null;
+  renderCart(); // shows restored cart immediately
+}
+
+// Debounce helper you already use; add if missing here:
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
 
   // Totals
   document.getElementById("productTotal").textContent = formatMoney(productTotal);
   const laborTotal = calcLaborTotal();
   document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
   document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
-}
+
 
 function updateTotalsOnly() {
   // products
@@ -485,24 +693,10 @@ function updateTotalsOnly() {
 
 
 // ====================== Labor ============================
-let _laborIdSeq = 1;
 
-function addLaborLine(base = 0, name = "Labor line") {
-  LABOR_LINES.push({ id: _laborIdSeq++, name: String(name), base: Number(base) || 0 });
-  showEl("cart-section", true);
-  renderLabor();        // render the labor UI rows
-  updateTotalsOnly();   // recalc totals without rebuilding cart rows
-}
-
-function removeLaborLine(id) {
-  LABOR_LINES = LABOR_LINES.filter(l => l.id !== id);
-  renderLabor();
-  updateTotalsOnly();
-  if (CART.size === 0 && LABOR_LINES.length === 0) {
-    showEl("cart-section", false);
-  }
-}
-
+document.addEventListener("DOMContentLoaded", () => {
+  stageRestoreFromLocalStorage();
+});
 function calcLaborTotal() {
   let total = 0;
   for (const l of LABOR_LINES) {
@@ -515,8 +709,7 @@ function calcLaborTotal() {
 function renderLabor() {
   const wrap = document.getElementById("labor-list");
   if (!wrap) return;
-
-  // Clear existing rows (keeping the header area)
+  // Clear existing rows (keeping header area)
   const existingRows = wrap.querySelectorAll(".labor-row");
   existingRows.forEach(el => el.remove());
 
@@ -533,9 +726,8 @@ function renderLabor() {
     wrap.appendChild(row);
   }
 
-  // One delegated handler for both renaming and base-cost changes
   wrap.oninput = (ev) => {
-    // base cost edits
+    // base edits
     const baseEl = ev.target.closest(".labor-base");
     if (baseEl) {
       const id  = Number(baseEl.getAttribute("data-id"));
@@ -545,12 +737,17 @@ function renderLabor() {
 
       l.base = Number.isFinite(val) ? val : 0;
 
-      // Update this row's readonly sell field
+      // update this row's readonly sell
       const row = baseEl.closest(".labor-row");
       const sellReadout = row?.querySelector('div:nth-child(3) input[readonly]');
       if (sellReadout) sellReadout.value = formatMoney((Number(l.base) || 0) * MARKUP_MULT);
 
-      updateTotalsOnly();
+      // light render path for totals
+      document.getElementById("laborTotal").textContent = formatMoney(calcLaborTotal());
+      document.getElementById("grandTotal").textContent =
+        formatMoney(calcProductsTotal() + calcLaborTotal());
+
+      persistState(); // NEW
       return;
     }
 
@@ -559,7 +756,10 @@ function renderLabor() {
     if (nameEl) {
       const id = Number(nameEl.getAttribute("data-id"));
       const l  = LABOR_LINES.find(x => x.id === id);
-      if (l) l.name = nameEl.value;
+      if (l) {
+        l.name = nameEl.value;
+        persistState(); // NEW
+      }
     }
   };
 
@@ -567,33 +767,32 @@ function renderLabor() {
     const btn = ev.target.closest(".remove-labor");
     if (!btn) return;
     const id = Number(btn.getAttribute("data-id"));
-    removeLaborLine(id);
+    removeLaborLine(id); // will persist inside remove
   };
+}
+
+// helpers used above
+function calcProductsTotal() {
+  let productTotal = 0;
+  for (const [, item] of CART.entries()) productTotal += item.unitSell * item.qty;
+  return productTotal;
 }
 
 
 // ====================== Main Flow ========================
 async function listSheetData() {
-  try {
-    const { rows, title } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
-    console.log(`[Sheets] Rows loaded from "${title}":`, rows.length);
-    ALL_ROWS = rows;
-    populateVendorFilter(ALL_ROWS);
-    // Enable controls
-    setDisabled("searchInput", false);
-    setDisabled("vendorFilter", false);
-    setDisabled("clearFilters", false);
-
-    // Wire control events once
-    wireControlsOnce();
-
-    // Initial render
-    applyFilters();
-  } catch (e) {
-    console.error("listSheetData() failed:", e);
-    throw e;
-  }
+  const { rows, title } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
+  ALL_ROWS = rows;
+  // restore saved cart/labor now that ALL_ROWS is ready
+  applyRestoreAfterDataLoad();
+  populateVendorFilter(ALL_ROWS);
+  setDisabled("searchInput", false);
+  setDisabled("vendorFilter", false);
+  setDisabled("clearFilters", false);
+  wireControlsOnce();
+  applyFilters();
 }
+
 
 // ====================== Controls Wiring ===================
 let _controlsWired = false;
