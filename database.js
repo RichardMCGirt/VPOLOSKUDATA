@@ -22,12 +22,11 @@ let tokenClient;
 let gapiInited = false;
 let gisInited  = false;
 let tokenRequestInFlight = false; // guard against double-click or race with other flows
-
 // Data state
 let ALL_ROWS = [];         // full product list from sheet
 let FILTERED_ROWS = [];    // after search/vendor filters
 const CART = new Map();    // key: sku|vendor -> {row, qty, unitBase, unitSell}
-let LABOR_LINES = [];      // array of {id, base}
+let LABOR_LINES = [];       // array of {id, name, base}
 
 // =============== Bootstrap GAPI (Sheets v4) ===============
 function gapiLoaded() {
@@ -440,21 +439,25 @@ function renderCart() {
   tbody.innerHTML = rows.join("");
 
   // Wire qty + remove
-  tbody.oninput = (ev) => {
-    const input = ev.target.closest(".cart-qty");
-    if (!input) return;
-    const key = input.getAttribute("data-key");
-    const qty = Number(input.value);
-    updateCartQty(key, qty);
-  };
-  tbody.onclick = (ev) => {
-    const btn = ev.target.closest(".remove-item");
-    if (!btn) return;
-    removeCartItem(btn.getAttribute("data-key"));
-  };
+ tbody.oninput = (ev) => {
+  const input = ev.target.closest(".cart-qty");
+  if (!input) return;
 
-  // Labor
-  renderLabor();
+  const key = input.getAttribute("data-key");
+  const qty = Math.max(1, Math.floor(Number(input.value) || 1));
+  const item = CART.get(key);
+  if (!item) return;
+
+  item.qty = qty;
+
+  // Update just this row’s Line Total cell (6th column)
+  const tr = input.closest("tr");
+  const lineCell = tr?.querySelector("td:nth-child(6)");
+  if (lineCell) lineCell.textContent = formatMoney(item.unitSell * item.qty);
+
+  updateTotalsOnly();
+};
+
 
   // Totals
   document.getElementById("productTotal").textContent = formatMoney(productTotal);
@@ -463,19 +466,38 @@ function renderCart() {
   document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
 }
 
+function updateTotalsOnly() {
+  // products
+  let productTotal = 0;
+  for (const [, item] of CART.entries()) {
+    productTotal += item.unitSell * item.qty;
+  }
+  document.getElementById("productTotal").textContent = formatMoney(productTotal);
+
+  // labor
+  const laborTotal = calcLaborTotal();
+  document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
+
+  // grand
+  document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
+}
+
 
 
 // ====================== Labor ============================
 let _laborIdSeq = 1;
-function addLaborLine(base = 0) {
-  LABOR_LINES.push({ id: _laborIdSeq++, base: Number(base) || 0 });
+
+function addLaborLine(base = 0, name = "Labor line") {
+  LABOR_LINES.push({ id: _laborIdSeq++, name: String(name), base: Number(base) || 0 });
   showEl("cart-section", true);
-  renderCart();
+  renderLabor();        // render the labor UI rows
+  updateTotalsOnly();   // recalc totals without rebuilding cart rows
 }
 
 function removeLaborLine(id) {
   LABOR_LINES = LABOR_LINES.filter(l => l.id !== id);
-  renderCart();
+  renderLabor();
+  updateTotalsOnly();
   if (CART.size === 0 && LABOR_LINES.length === 0) {
     showEl("cart-section", false);
   }
@@ -493,7 +515,8 @@ function calcLaborTotal() {
 function renderLabor() {
   const wrap = document.getElementById("labor-list");
   if (!wrap) return;
-  // Clear existing rows (keeping header area)
+
+  // Clear existing rows (keeping the header area)
   const existingRows = wrap.querySelectorAll(".labor-row");
   existingRows.forEach(el => el.remove());
 
@@ -502,7 +525,7 @@ function renderLabor() {
     const row = document.createElement("div");
     row.className = "labor-row";
     row.innerHTML = `
-      <div>Labor line</div>
+      <div><input type="text" class="labor-name" data-id="${l.id}" value="${escapeHtml(l.name || "Labor line")}" placeholder="Labor name"></div>
       <div><input type="number" min="0" step="0.01" value="${l.base}" class="labor-base" data-id="${l.id}" placeholder="Base cost"></div>
       <div><input type="text" value="${formatMoney(sell)}" readonly></div>
       <div><button class="btn danger remove-labor" data-id="${l.id}">Remove</button></div>
@@ -510,18 +533,36 @@ function renderLabor() {
     wrap.appendChild(row);
   }
 
+  // One delegated handler for both renaming and base-cost changes
   wrap.oninput = (ev) => {
-    const input = ev.target.closest(".labor-base");
-    if (!input) return;
-    const id = Number(input.getAttribute("data-id"));
-    const val = Number(input.value);
-    const l = LABOR_LINES.find(x => x.id === id);
-    if (l) {
+    // base cost edits
+    const baseEl = ev.target.closest(".labor-base");
+    if (baseEl) {
+      const id  = Number(baseEl.getAttribute("data-id"));
+      const val = Number(baseEl.value);
+      const l   = LABOR_LINES.find(x => x.id === id);
+      if (!l) return;
+
       l.base = Number.isFinite(val) ? val : 0;
-      // Do a partial rerender for totals + read-only sell
-      renderCart(); // simple: reuse totals render
+
+      // Update this row's readonly sell field
+      const row = baseEl.closest(".labor-row");
+      const sellReadout = row?.querySelector('div:nth-child(3) input[readonly]');
+      if (sellReadout) sellReadout.value = formatMoney((Number(l.base) || 0) * MARKUP_MULT);
+
+      updateTotalsOnly();
+      return;
+    }
+
+    // name edits
+    const nameEl = ev.target.closest(".labor-name");
+    if (nameEl) {
+      const id = Number(nameEl.getAttribute("data-id"));
+      const l  = LABOR_LINES.find(x => x.id === id);
+      if (l) l.name = nameEl.value;
     }
   };
+
   wrap.onclick = (ev) => {
     const btn = ev.target.closest(".remove-labor");
     if (!btn) return;
@@ -529,6 +570,7 @@ function renderLabor() {
     removeLaborLine(id);
   };
 }
+
 
 // ====================== Main Flow ========================
 async function listSheetData() {
