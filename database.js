@@ -589,10 +589,10 @@ function renderCart() {
 
     rows.push(`
       <tr data-key="${escapeHtml(key)}">
-        <td>${escapeHtml(item.row.vendor)}</td>
-        <td>${escapeHtml(item.row.sku)}</td>
-        <td>${escapeHtml(item.row.description)}</td>
-        <td>
+        <td data-label="Vendor">${escapeHtml(item.row.vendor)}</td>
+        <td data-label="SKU">${escapeHtml(item.row.sku)}</td>
+        <td data-label="Description">${escapeHtml(item.row.description)}</td>
+        <td data-label="Qty">
           <input
             type="number"
             class="qty-input cart-qty"
@@ -601,9 +601,9 @@ function renderCart() {
             value="${item.qty}"
             data-key="${escapeHtml(key)}">
         </td>
-        <td>${formatMoney(item.unitSell)}</td>
-        <td>${formatMoney(line)}</td>
-        <td>
+        <td data-label="Unit">${formatMoney(item.unitSell)}</td>
+        <td data-label="Line Total">${formatMoney(line)}</td>
+        <td data-label="Action">
           <button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button>
         </td>
       </tr>

@@ -42,8 +42,8 @@ h1{ margin:12px 0 6px; font-weight:600; }
 /* ===== Floating Cart ===== */
 .cart-fab{
   position: fixed;
-  top: 12px;
-  right: 12px;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
   z-index: 10000;
   display: inline-flex;
   align-items: center;
@@ -185,8 +185,30 @@ tbody tr:last-child td { border-bottom: none; }
   display:none;
 }
 
-/* ===== Mobile: turn product table into cards (no horizontal scroll) ===== */
+/* ===== Mobile: centered product cards, sticky top ===== */
 @media (max-width: 720px){
+  /* Friendlier header/controls on mobile */
+  .auth-row{ justify-content:center; }
+  h1{ text-align:center; font-size:1.25rem; margin:8px 0; }
+
+  #controls{
+    grid-template-columns: 1fr;
+    top: calc(56px + env(safe-area-inset-top));
+    z-index: 900;
+    background: rgba(255,255,255,.92);
+    backdrop-filter: saturate(1.1) blur(6px);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+  }
+
+  #categoryChips{
+    position: sticky;
+    top: calc(56px + env(safe-area-inset-top) + 140px);
+    z-index: 800;
+    background: linear-gradient(#fff, rgba(255,255,255,.96));
+  }
+
+  /* Product table -> centered cards */
   #table-container { overflow: visible; }
   #data-table,
   #data-table tbody,
@@ -195,10 +217,12 @@ tbody tr:last-child td { border-bottom: none; }
   #data-table thead { display:none; }
   #data-table tbody tr{
     border:1px solid var(--border);
-    border-radius: 12px;
-    padding: 8px;
-    margin-bottom: 10px;
+    border-radius: 16px;
+    padding: 10px 10px 12px;
+    margin: 10px auto;
     background:#fff;
+    box-shadow: var(--shadow);
+    max-width: 640px;
   }
   #data-table tbody td{
     border:none;
@@ -226,15 +250,56 @@ tbody tr:last-child td { border-bottom: none; }
   background:var(--thead);
   border-bottom:1px solid var(--border);
   padding:10px 12px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
 }
 
 #cart-table thead th{ background:var(--thead-2); }
 #cart-table tbody td { font-size: .95rem; }
 
-/* Hide the "Unit (Sell +30%)" column in the cart */
+/* Hide the "Unit (Sell +30%)" column in the cart (desktop) */
 #cart-table thead th:nth-child(5),
 #cart-table tbody td:nth-child(5) { display: none; }
 
+/* Mobile: cart rows as cards, cleaner labels, hide vendor/SKU */
+@media (max-width: 720px){
+  #cart-table thead{ display:none; }
+  #cart-table, #cart-table tbody, #cart-table tr, #cart-table td{ display:block; width:100%; }
+  #cart-table tbody tr{
+    border:1px solid var(--border);
+    border-radius:16px;
+    background:#fff;
+    box-shadow: var(--shadow);
+    padding: 10px;
+    margin: 10px auto;
+    max-width: 640px;
+  }
+  /* hide vendor & sku in cart on mobile */
+  #cart-table tbody td:nth-child(1),
+  #cart-table tbody td:nth-child(2){ display:none; }
+
+  #cart-table tbody td{
+    border:none;
+    display:grid;
+    grid-template-columns: auto 1fr;
+    gap:8px;
+    padding:8px 6px;
+  }
+  #cart-table tbody td::before{
+    content: attr(data-label);
+    color: var(--muted);
+    font-weight:600;
+  }
+  /* qty & action alignments */
+  #cart-table tbody td:nth-child(4){ align-items:center; }
+  #cart-table tbody td:nth-child(7){
+    display:flex;
+    justify-content:flex-end;
+    padding-top: 6px;
+  }
+}
+
+/* Totals */
 #totals{
   display:grid;
   grid-template-columns: 1fr auto;
