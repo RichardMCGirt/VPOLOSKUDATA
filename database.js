@@ -13,11 +13,21 @@ const DEFAULT_GID = 0;
 const PRODUCT_TAB_FALLBACK = "DataLoad";   // used if we can't resolve a title from gid
 const PRODUCT_RANGE        = "A1:H10000";  // Vendor..Price Extended columns
 
+// Margin
+const MARGIN = 0.30;
+const MARKUP_MULT = 1 + MARGIN;
+
 // --- State ---
 let tokenClient;
 let gapiInited = false;
 let gisInited  = false;
 let tokenRequestInFlight = false; // guard against double-click or race with other flows
+
+// Data state
+let ALL_ROWS = [];         // full product list from sheet
+let FILTERED_ROWS = [];    // after search/vendor filters
+const CART = new Map();    // key: sku|vendor -> {row, qty, unitBase, unitSell}
+let LABOR_LINES = [];      // array of {id, base}
 
 // =============== Bootstrap GAPI (Sheets v4) ===============
 function gapiLoaded() {
@@ -42,11 +52,11 @@ function gisLoaded() {
       console.log("[GIS] Token received. Access token present:", !!tokenResponse.access_token);
 
       // Hide authorize, show signout
-      document.getElementById("authorize_button").style.display = "none";
-      document.getElementById("signout_button").style.display   = "inline-block";
+      showEl("authorize_button", false);
+      showEl("signout_button", true);
 
       // Show loader bar while we fetch
-      document.getElementById("loadingBarOverlay").style.display = "block";
+      showEl("loadingBarOverlay", true);
 
       try {
         await listSheetData();
@@ -55,8 +65,8 @@ function gisLoaded() {
         console.error("Error loading sheet:", e);
         showToast("Error loading sheet (see console).");
       } finally {
-        document.getElementById("loadingBarOverlay").style.display = "none";
-        document.getElementById("table-container").style.display   = "block";
+        showEl("loadingBarOverlay", false);
+        showEl("table-container", true);
       }
     },
   });
@@ -101,13 +111,22 @@ function handleSignoutClick() {
       gapi.client.setToken(""); // clear in gapi
       tokenRequestInFlight = false;
 
-      document.getElementById("authorize_button").style.display = "inline-block";
-      document.getElementById("signout_button").style.display   = "none";
+      showEl("authorize_button", true);
+      showEl("signout_button", false);
 
-      // Clear table
+      // Clear UI
       const tbody = document.querySelector("#data-table tbody");
       if (tbody) tbody.innerHTML = "";
+      ALL_ROWS = [];
+      FILTERED_ROWS = [];
+      CART.clear();
+      LABOR_LINES = [];
+      renderCart();
       showToast("Signed out.");
+      // Disable filters
+      setDisabled("searchInput", true);
+      setDisabled("vendorFilter", true);
+      setDisabled("clearFilters", true);
     });
   }
 }
@@ -249,7 +268,7 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
   return { rows, bySku, bySkuVendor, title };
 }
 
-// ====================== Render ============================
+// ====================== Render: Product Table ============================
 function ensureTable() {
   let table = document.getElementById("data-table");
   if (!table) {
@@ -265,40 +284,8 @@ function ensureTable() {
 
 function formatMoney(n) {
   const x = Number(n ?? 0);
-  if (!Number.isFinite(x)) return "";
-  return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function renderTable(rows) {
-  const table = ensureTable();
-  const thead = table.querySelector("thead");
-  const tbody = table.querySelector("tbody");
-  if (thead) {
-    thead.innerHTML = `
-      <tr>
-        <th>Vendor</th>
-        <th>SKU</th>
-        <th>UOM</th>
-        <th>Description</th>
-        <th>SKUHelper</th>
-        <th>UOM Multiple</th>
-        <th>Cost</th>
-        <th>Price Extended</th>
-      </tr>`;
-  }
-  if (tbody) {
-    tbody.innerHTML = rows.map(r => `
-      <tr>
-        <td>${escapeHtml(r.vendor)}</td>
-        <td>${escapeHtml(r.sku)}</td>
-        <td>${escapeHtml(r.uom)}</td>
-        <td>${escapeHtml(r.description)}</td>
-        <td>${escapeHtml(r.skuHelper)}</td>
-        <td>${r.uomMultiple ?? ""}</td>
-        <td>${formatMoney(r.cost)}</td>
-        <td>${formatMoney(r.priceExtended)}</td>
-      </tr>`).join("");
-  }
+  if (!Number.isFinite(x)) return "$0.00";
+  return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2, style: "currency", currency: "USD" });
 }
 
 function escapeHtml(s) {
@@ -310,19 +297,286 @@ function escapeHtml(s) {
     .replaceAll("'","&#039;");
 }
 
+function unitBase(row) {
+  // Use priceExtended if available; otherwise cost * uomMultiple
+  const mult = row.uomMultiple == null ? 1 : Number(row.uomMultiple) || 1;
+  const px = (row.priceExtended != null ? Number(row.priceExtended) : null);
+  const cost = (row.cost != null ? Number(row.cost) : 0);
+  return (px != null ? px : (mult * cost));
+}
+
+function unitSell(row) {
+  return unitBase(row) * MARKUP_MULT;
+}
+
+function renderTable(rows) {
+  const table = ensureTable();
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+
+  if (thead) {
+    thead.innerHTML = `
+      <tr>
+        <th>Vendor</th>
+        <th>SKU</th>
+        <th>UOM</th>
+        <th>Description</th>
+        <th style="width:120px;">Qty</th>
+        <th style="width:120px;"></th>
+      </tr>`;
+  }
+  if (tbody) {
+    tbody.innerHTML = rows.map((r, idx) => {
+      const key = `${r.sku}|${r.vendor}`;
+      return `
+      <tr data-key="${escapeHtml(key)}">
+        <td>${escapeHtml(r.vendor)}</td>
+        <td>${escapeHtml(r.sku)}</td>
+        <td>${escapeHtml(r.uom)}</td>
+        <td>${escapeHtml(r.description)}</td>
+        <td><input type="number" class="qty-input" min="1" step="1" value="1" id="qty_${idx}"></td>
+        <td class="row-actions">
+          <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
+        </td>
+      </tr>`;
+    }).join("");
+  }
+
+  // Delegate clicks for Add
+  tbody.onclick = (ev) => {
+    const btn = ev.target.closest(".add-to-cart");
+    if (!btn) return;
+    const idx = Number(btn.getAttribute("data-idx") || "0");
+    const qtyInput = document.getElementById(`qty_${idx}`);
+    let qty = Number(qtyInput?.value || 1);
+    if (!Number.isFinite(qty) || qty <= 0) qty = 1;
+    addToCart(rows[idx], qty);
+  };
+}
+
+// ====================== Filters & Search ============================
+function populateVendorFilter(rows) {
+  const sel = document.getElementById("vendorFilter");
+  if (!sel) return;
+  const vendors = Array.from(new Set(rows.map(r => r.vendor).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
+  sel.innerHTML = `<option value="">All vendors</option>` + vendors.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+}
+
+function applyFilters() {
+  const q = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
+  const vSel = (document.getElementById("vendorFilter")?.value || "");
+  FILTERED_ROWS = ALL_ROWS.filter(r => {
+    const matchesVendor = !vSel || r.vendor === vSel;
+    const hay = `${r.sku} ${r.description}`.toLowerCase();
+    const matchesQuery = !q || hay.includes(q);
+    return matchesVendor && matchesQuery;
+  });
+  renderTable(FILTERED_ROWS);
+}
+
+// ====================== Cart ============================
+function addToCart(row, qty) {
+  const key = `${row.sku}|${row.vendor}`;
+  const existing = CART.get(key);
+  const ub = unitBase(row);
+  const us = ub * MARKUP_MULT;
+  if (existing) {
+    existing.qty += qty;
+  } else {
+    CART.set(key, { row, qty, unitBase: ub, unitSell: us });
+  }
+  // Ensure there's at least one labor input available
+  if (LABOR_LINES.length === 0) {
+    addLaborLine(0);
+  }
+  renderCart();
+  showEl("cart-section", true);
+}
+
+function updateCartQty(key, qty) {
+  const item = CART.get(key);
+  if (!item) return;
+  item.qty = Math.max(1, Math.floor(qty || 1));
+  renderCart();
+}
+
+function removeCartItem(key) {
+  CART.delete(key);
+  renderCart();
+  if (CART.size === 0 && LABOR_LINES.length === 0) {
+    showEl("cart-section", false);
+  }
+}
+
+function clearCart() {
+  CART.clear();
+  renderCart();
+  if (LABOR_LINES.length === 0) showEl("cart-section", false);
+}
+
+function renderCart() {
+  const tbody = document.querySelector("#cart-table tbody");
+  if (!tbody) return;
+  const rows = [];
+  let productTotal = 0;
+
+  for (const [key, item] of CART.entries()) {
+    const line = item.unitSell * item.qty;
+    productTotal += line;
+    rows.push(`
+      <tr data-key="${escapeHtml(key)}">
+        <td>${escapeHtml(item.row.vendor)}</td>
+        <td>${escapeHtml(item.row.sku)}</td>
+        <td>${escapeHtml(item.row.description)}</td>
+        <td>
+          <input type="number" class="qty-input cart-qty" min="1" step="1" value="${item.qty}" data-key="${escapeHtml(key)}">
+        </td>
+        <td>${formatMoney(item.unitSell)}</td>
+        <td>${formatMoney(line)}</td>
+        <td><button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button></td>
+      </tr>
+    `);
+  }
+  tbody.innerHTML = rows.join("");
+
+  // Wire qty + remove
+  tbody.oninput = (ev) => {
+    const input = ev.target.closest(".cart-qty");
+    if (!input) return;
+    const key = input.getAttribute("data-key");
+    const qty = Number(input.value);
+    updateCartQty(key, qty);
+  };
+  tbody.onclick = (ev) => {
+    const btn = ev.target.closest(".remove-item");
+    if (!btn) return;
+    removeCartItem(btn.getAttribute("data-key"));
+  };
+
+  // Labor
+  renderLabor();
+
+  // Totals
+  document.getElementById("productTotal").textContent = formatMoney(productTotal);
+  const laborTotal = calcLaborTotal();
+  document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
+  document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
+}
+
+
+
+// ====================== Labor ============================
+let _laborIdSeq = 1;
+function addLaborLine(base = 0) {
+  LABOR_LINES.push({ id: _laborIdSeq++, base: Number(base) || 0 });
+  showEl("cart-section", true);
+  renderCart();
+}
+
+function removeLaborLine(id) {
+  LABOR_LINES = LABOR_LINES.filter(l => l.id !== id);
+  renderCart();
+  if (CART.size === 0 && LABOR_LINES.length === 0) {
+    showEl("cart-section", false);
+  }
+}
+
+function calcLaborTotal() {
+  let total = 0;
+  for (const l of LABOR_LINES) {
+    const sell = (Number(l.base) || 0) * MARKUP_MULT;
+    total += sell;
+  }
+  return total;
+}
+
+function renderLabor() {
+  const wrap = document.getElementById("labor-list");
+  if (!wrap) return;
+  // Clear existing rows (keeping header area)
+  const existingRows = wrap.querySelectorAll(".labor-row");
+  existingRows.forEach(el => el.remove());
+
+  for (const l of LABOR_LINES) {
+    const sell = (Number(l.base) || 0) * MARKUP_MULT;
+    const row = document.createElement("div");
+    row.className = "labor-row";
+    row.innerHTML = `
+      <div>Labor line</div>
+      <div><input type="number" min="0" step="0.01" value="${l.base}" class="labor-base" data-id="${l.id}" placeholder="Base cost"></div>
+      <div><input type="text" value="${formatMoney(sell)}" readonly></div>
+      <div><button class="btn danger remove-labor" data-id="${l.id}">Remove</button></div>
+    `;
+    wrap.appendChild(row);
+  }
+
+  wrap.oninput = (ev) => {
+    const input = ev.target.closest(".labor-base");
+    if (!input) return;
+    const id = Number(input.getAttribute("data-id"));
+    const val = Number(input.value);
+    const l = LABOR_LINES.find(x => x.id === id);
+    if (l) {
+      l.base = Number.isFinite(val) ? val : 0;
+      // Do a partial rerender for totals + read-only sell
+      renderCart(); // simple: reuse totals render
+    }
+  };
+  wrap.onclick = (ev) => {
+    const btn = ev.target.closest(".remove-labor");
+    if (!btn) return;
+    const id = Number(btn.getAttribute("data-id"));
+    removeLaborLine(id);
+  };
+}
+
 // ====================== Main Flow ========================
 async function listSheetData() {
   try {
     const { rows, title } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
     console.log(`[Sheets] Rows loaded from "${title}":`, rows.length);
-    renderTable(rows);
+    ALL_ROWS = rows;
+    populateVendorFilter(ALL_ROWS);
+    // Enable controls
+    setDisabled("searchInput", false);
+    setDisabled("vendorFilter", false);
+    setDisabled("clearFilters", false);
+
+    // Wire control events once
+    wireControlsOnce();
+
+    // Initial render
+    applyFilters();
   } catch (e) {
     console.error("listSheetData() failed:", e);
     throw e;
   }
 }
 
-// ====================== Toast/UX =========================
+// ====================== Controls Wiring ===================
+let _controlsWired = false;
+function wireControlsOnce() {
+  if (_controlsWired) return;
+  _controlsWired = true;
+
+  const search = document.getElementById("searchInput");
+  const vendor = document.getElementById("vendorFilter");
+  const clear  = document.getElementById("clearFilters");
+  const clearCartBtn = document.getElementById("clearCart");
+  const addLaborBtn  = document.getElementById("addLabor");
+
+  if (search) search.addEventListener("input", debounce(applyFilters, 120));
+  if (vendor) vendor.addEventListener("change", applyFilters);
+  if (clear)  clear.addEventListener("click", () => {
+    if (search) search.value = "";
+    if (vendor) vendor.value = "";
+    applyFilters();
+  });
+  if (clearCartBtn) clearCartBtn.addEventListener("click", clearCart);
+  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0));
+}
+
+// ====================== Toast/UX/Utils =========================
 function showToast(message = "Done") {
   const el = document.getElementById("toast");
   if (!el) return;
@@ -337,15 +591,40 @@ function showToast(message = "Done") {
   }, 1800);
 }
 
+function showEl(id, show) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (show) {
+    el.classList.remove("hidden");
+    el.style.display = (id === "table-container" ? "block" : "");
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
+function setDisabled(id, isDisabled) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.disabled = !!isDisabled;
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
 // Auto-refresh every 5 minutes if signed in
 setInterval(() => {
   const signedIn = document.getElementById("signout_button")?.style.display === "inline-block";
   if (signedIn) {
-    document.getElementById("loadingBarOverlay").style.display = "block";
+    showEl("loadingBarOverlay", true);
     listSheetData()
       .then(() => showToast("Auto-refreshed."))
       .finally(() => {
-        document.getElementById("loadingBarOverlay").style.display = "none";
+        showEl("loadingBarOverlay", false);
       });
   }
 }, 300000);

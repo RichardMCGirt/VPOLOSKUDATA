@@ -1,0 +1,211 @@
+/* Product & Labor Portal — CSS */
+
+/* ===== Reset & base ===== */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+:root{
+  --gap: 12px;
+  --pad: 12px;
+  --radius: 10px;
+  --border:#ddd;
+  --bg:#ffffff;
+  --muted:#6b7280;
+  --brand:#0f62fe;
+  --danger:#e66;
+  --hover:#fafafa;
+  --thead:#f7f7f7;
+  --thead-2:#fffef7;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: #111827;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  line-height: 1.4;
+}
+
+body{ max-width:1100px; margin:0 auto; padding:16px; }
+h1{ margin:12px 0 6px; font-weight:600; }
+
+.muted { color: var(--muted); opacity:.95; font-size:.92rem; }
+
+/* ===== Controls ===== */
+#controls{
+  display:grid;
+  grid-template-columns: 1fr 220px 160px;
+  gap: var(--gap);
+  align-items: center;
+  margin: 8px 0 14px;
+}
+
+input[type="search"],
+select,
+input[type="number"] {
+  padding:10px;
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  width:100%;
+  background:#fff;
+  color:#111827;
+}
+
+input[type="search"]:disabled,
+select:disabled,
+button:disabled { opacity:.6; cursor:not-allowed; }
+
+/* ===== Buttons ===== */
+.btn{
+  padding:8px 10px;
+  border:1px solid #ccc;
+  border-radius:10px;
+  background:#fff;
+  cursor:pointer;
+  transition: box-shadow .15s ease, transform .03s ease;
+  user-select:none;
+}
+.btn:hover{ box-shadow: 0 1px 0 rgba(0,0,0,.06), 0 1.5px 6px rgba(0,0,0,.06); }
+.btn:active{ transform: translateY(1px); }
+
+.btn.primary{ background:var(--brand); color:#fff; border-color:var(--brand); }
+.btn.danger{ background:#fff0f0; border-color:var(--danger); color:#9b1c1c; }
+.btn.ghost{ background:transparent; }
+
+.pill{ padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:#fff; }
+
+/* ===== Table ===== */
+#table-container{
+  margin-top:10px;
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  overflow:hidden;
+}
+
+table{ width:100%; border-collapse: collapse; }
+thead th{
+  background:var(--thead);
+  position:sticky; top:0; z-index:1;
+  text-align:left; padding:10px; border-bottom:1px solid var(--border);
+  font-weight:600;
+  font-size:.95rem;
+}
+tbody td{ padding:8px 10px; border-bottom:1px solid #eee; vertical-align: middle; }
+tbody tr:hover{ background:var(--hover); }
+tbody tr:last-child td { border-bottom: none; }
+
+.qty-input{ width:80px; padding:6px; border:1px solid var(--border); border-radius: 8px; }
+.row-actions{ display:flex; gap:8px; align-items:center; }
+
+/* ===== Cart / Selection ===== */
+#cart-section{
+  margin:18px 0;
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  overflow:hidden;
+}
+
+#cart-section header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  background:var(--thead);
+  border-bottom:1px solid var(--border);
+  padding:10px 12px;
+}
+
+#cart-table thead th{ background:var(--thead-2); }
+#cart-table tbody td { font-size: .95rem; }
+
+#totals{
+  display:grid;
+  grid-template-columns: 1fr auto;
+  gap:8px;
+  align-items:center;
+  padding:12px;
+  border-top:1px dashed var(--border);
+}
+#totals .label{ text-align:right; padding-right:8px; color:#111827; }
+#totals .value{ font-weight:700; min-width:140px; text-align:right; }
+
+.inline-note{ font-size:.85em; opacity:.8; margin-left:6px; }
+
+/* ===== Labor ===== */
+#labor-list{ padding:10px 12px; border-top:1px dashed var(--border); }
+.labor-row{
+  display:grid;
+  grid-template-columns: 1fr 160px 160px 90px;
+  gap:8px;
+  align-items:center;
+  margin-bottom:8px;
+}
+.labor-row input[type="number"]{ padding:8px; border:1px solid var(--border); border-radius: 10px; width:100%; }
+.labor-row input[readonly]{ background:#f9fafb; color:#111827; }
+
+/* ===== Toast ===== */
+#toast{
+  visibility:hidden;
+  min-width:180px;
+  background-color:#333;
+  color:#fff;
+  text-align:center;
+  border-radius:8px;
+  padding:14px;
+  position:fixed;
+  z-index:9999;
+  left:50%;
+  bottom:30px;
+  font-size:17px;
+  transform:translateX(-50%);
+  transition:visibility 0s, opacity 0.5s linear;
+  opacity:0;
+}
+
+/* ===== Loading bar ===== */
+.loading-bar-overlay{
+  position:fixed;
+  inset:0;
+  background: rgba(255,255,255,.65);
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:9998;
+}
+.loading-bar-container{
+  width: 320px;
+  height: 8px;
+  border-radius:999px;
+  background:#eee;
+  overflow:hidden;
+  box-shadow: 0 1px 6px rgba(0,0,0,.08) inset;
+}
+.loading-bar{
+  width: 40%;
+  height: 100%;
+  border-radius:999px;
+  background: var(--brand);
+  animation: barSlide 1.2s infinite ease-in-out;
+}
+
+@keyframes barSlide {
+  0%   { transform: translateX(-120%); }
+  50%  { transform: translateX(10%); }
+  100% { transform: translateX(140%); }
+}
+
+/* ===== Helpers ===== */
+.hidden{ display:none !important; }
+
+/* ===== Responsive ===== */
+@media (max-width: 800px){
+  #controls{ grid-template-columns: 1fr; gap:8px; }
+  .labor-row{ grid-template-columns: 1fr 140px 140px 90px; }
+  .qty-input{ width:68px; }
+}
+  /* Hides the "Unit (Sell +30%)" column */
+  #cart-table thead th:nth-child(5),
+  #cart-table tbody td:nth-child(5) {
+    display: none;
+  }

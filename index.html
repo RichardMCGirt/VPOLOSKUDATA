@@ -2,46 +2,86 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0">
-  <title>CSV Column Display with Count and Percentage (Average)</title>
-  <link rel="stylesheet" href="style/weeklygoals.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Product Portal — Select Items, Add Labor, 30% Margin</title>
+  <link rel="stylesheet" href="style.css">
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  
 </head>
 <body>
 
-
   <!-- Auth/UI -->
-  <button id="signout_button" style="display:none; margin-left:12px; font-size:1.1em;">Sign out</button>
-  <div id="user-info"></div>
-  <h1>Weekly Goals</h1>
-  <div class="download-info" id="csvDate"></div>
-  <button id="authorize_button" style="margin:18px 0 8px 0; font-size:1.1em;">Sign in to View Google Sheet</button>
-  <button id="refresh_button" style="display:none;">Refresh Data</button>
-
-  <!-- Toast -->
-  <div id="toast" style="visibility:hidden; min-width:180px; background-color:#333; color:#fff; text-align:center; border-radius:8px; padding:14px; position:fixed; z-index:9999; left:50%; bottom:30px; font-size:17px; transform:translateX(-50%); transition:visibility 0s, opacity 0.5s linear; opacity:0;">
-    Refreshed!
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+    <button id="authorize_button" class="btn primary" style="font-size:1.0em;">Sign in to View Google Sheet</button>
+    <button id="signout_button" class="btn" style="display:none; font-size:1.0em;">Sign out</button>
+    <span class="muted">Prices in the product list are hidden. Cart totals include a 30% margin on products and labor.</span>
   </div>
 
-  <!-- Optional upload (hidden) -->
-  <div style="display:none;">
-    <div id="dropZone">
-      <p>Drag and drop your CSV file here or</p>
-      <label for="csvFileInput" style="color:#0044cc; cursor:pointer; text-decoration:underline;">click</label>
-      to upload.
-      <input type="file" id="csvFileInput" style="display:none;" accept=".csv" />
-    </div>
+  <h1>Product &amp; Labor Portal</h1>
+
+  <!-- Controls -->
+  <div id="controls">
+    <input id="searchInput" type="search" placeholder="Search by SKU or Description…" disabled>
+    <select id="vendorFilter" disabled>
+      <option value="">All vendors</option>
+    </select>
+    <button id="clearFilters" class="btn" disabled>Clear</button>
   </div>
 
   <!-- Data table container -->
-  <div id="table-container">
+  <div id="table-container" style="display:none;">
     <!-- Ensure the table exists for JS -->
     <table id="data-table">
       <thead></thead>
       <tbody></tbody>
     </table>
+  </div>
+
+  <!-- Cart / Selection -->
+  <section id="cart-section" class="hidden">
+    <header>
+      <strong>Selected Items</strong>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button id="clearCart" class="btn danger">Clear All</button>
+      </div>
+    </header>
+    <table id="cart-table">
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th>SKU</th>
+          <th>Description</th>
+          <th>Qty</th>
+          <th>Unit (Sell +30%)</th>
+          <th>Line Total</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <!-- Labor -->
+    <div id="labor-list">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <strong>Labor</strong>
+        <div>
+          <button id="addLabor" class="btn">+ Add Labor Line</button>
+        </div>
+      </div>
+      <!-- labor rows inserted here -->
+    </div>
+
+    <!-- Totals -->
+    <div id="totals">
+      <div class="label">Products Total:</div><div class="value" id="productTotal">$0.00</div>
+      <div class="label">Labor Total <span class="inline-note"></span>:</div><div class="value" id="laborTotal">$0.00</div>
+      <div class="label" style="font-size:1.15em;">Grand Total:</div><div class="value" id="grandTotal" style="font-size:1.15em;">$0.00</div>
+    </div>
+  </section>
+
+  <!-- Toast -->
+  <div id="toast" style="visibility:hidden; min-width:180px; background-color:#333; color:#fff; text-align:center; border-radius:8px; padding:14px; position:fixed; z-index:9999; left:50%; bottom:30px; font-size:17px; transform:translateX(-50%); transition:visibility 0s, opacity 0.5s linear; opacity:0;">
+    Done
   </div>
 
   <!-- Loading bar -->
@@ -51,15 +91,9 @@
     </div>
   </div>
 
-
-
-  <!-- Luxon (if you use it elsewhere) -->
+  <!-- JS -->
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
-
-  <!-- Your main JS (exports gapiLoaded/gisLoaded) -->
   <script src="database.js"></script>
-
-  <!-- Load each Google script ONCE, and only at the end -->
   <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()" async defer></script>
   <script src="https://accounts.google.com/gsi/client" onload="gisLoaded()" async defer></script>
 </body>
