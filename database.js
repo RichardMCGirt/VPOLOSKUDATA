@@ -21,7 +21,6 @@ const MARKUP_MULT = 1 + MARGIN;
 let tokenClient;
 let gapiInited = false;
 let gisInited  = false;
-let tokenRequestInFlight = false; // guard against double-click or race with other flows
 
 // Data state
 let ALL_ROWS = [];         // full product list from sheet (augmented with .category)
@@ -33,39 +32,102 @@ let LABOR_LINES = [];      // array of {id, name, base}
 let ALL_CATEGORIES = [];   // array of strings
 let ACTIVE_CATEGORY = "";  // pills set this, kept in sync with #categoryFilter
 
-// =============== Category rules (Description-based) ===============
-// ---------- category logic (drop-in replacement) ----------
-function escapeRegExp(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// ======== Token persistence & silent refresh ========
+const TOKEN_STORAGE_KEY = "vanir_gis_token_v1";
+let refreshTimerId = null;
+
+/**
+ * Store GIS access token with expiry and push into gapi.
+ */
+function setAndPersistToken(tokenResponse) {
+  if (!tokenResponse || !tokenResponse.access_token) return;
+  const expiresInSec = Number(tokenResponse.expires_in || 3600);
+  const expiresAt = Date.now() + expiresInSec * 1000;
+
+  // Persist to localStorage so reloads can skip the prompt
+  const stored = { access_token: tokenResponse.access_token, expires_at: expiresAt };
+  try { localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(stored)); } catch {}
+
+  // Set into gapi so requests work
+  gapi.client.setToken({ access_token: tokenResponse.access_token });
+
+  // Schedule a silent refresh ~5 minutes before expiry (min clamp = 10s)
+  scheduleSilentRefresh(Math.max(expiresAt - Date.now() - 5 * 60 * 1000, 10 * 1000));
+
+  // Flip UI to "signed in"
+  showEl("authorize_button", false);
+  showEl("signout_button", true);
 }
 
 /**
- * "Word-like" match: prefers whole-word-style matches, but will fall back to simple includes
- * for short tokens like "2x". Case-insensitive.
+ * Load stored token if still valid; returns true if applied.
  */
+function tryLoadStoredToken() {
+  let raw;
+  try { raw = localStorage.getItem(TOKEN_STORAGE_KEY); } catch {}
+  if (!raw) return false;
+
+  let obj;
+  try { obj = JSON.parse(raw); } catch { return false; }
+  if (!obj || !obj.access_token || !obj.expires_at) return false;
+
+  const skewMs = 10 * 1000; // be safe by 10s
+  if (Date.now() >= (obj.expires_at - skewMs)) return false;
+
+  // Apply
+  gapi.client.setToken({ access_token: obj.access_token });
+  showEl("authorize_button", false);
+  showEl("signout_button", true);
+
+  // Schedule refresh for the remaining lifetime
+  scheduleSilentRefresh(Math.max(obj.expires_at - Date.now() - 5 * 60 * 1000, 10 * 1000));
+  return true;
+}
+
+/**
+ * Schedule a silent refresh using GIS (no prompt).
+ */
+function scheduleSilentRefresh(delayMs) {
+  if (refreshTimerId) clearTimeout(refreshTimerId);
+  refreshTimerId = setTimeout(async () => {
+    try {
+      // Re-issue silently; if the user is still signed into Google and previously granted scopes,
+      // this returns a fresh token without UI.
+      tokenClient.requestAccessToken({ prompt: "" });
+    } catch (e) {
+      console.warn("[GIS] Silent refresh failed; will require user action if needed.", e);
+    }
+  }, delayMs);
+}
+
+/**
+ * Clear local token only (do NOT revoke with Google by default; avoids re-consent next visit).
+ */
+function clearLocalToken() {
+  try { localStorage.removeItem(TOKEN_STORAGE_KEY); } catch {}
+  try { gapi.client.setToken(null); } catch {}
+  if (refreshTimerId) { clearTimeout(refreshTimerId); refreshTimerId = null; }
+}
+
+// =============== Category rules (Description-based) ===============
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 function wordMatch(text, kw) {
   const t = String(text || "").toLowerCase();
   const k = String(kw || "").toLowerCase();
   if (!k) return false;
-
-  // Try a boundary-style match (don’t require \b so numbers/symbols like 2x still work via fallback)
   const boundary = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(k)}(?![A-Za-z0-9])`, "i");
   if (boundary.test(t)) return true;
-
-  // Fallback to substring includes for short tokens (e.g., "2x")
   return t.includes(k);
 }
 
-// Order matters: we now check Hardware/Fasteners before Lumber.
+// Order matters; Hardware/Fasteners before Lumber so nails don't get scooped by "joist".
 const CATEGORY_RULES = [
   { name: "Hardware", includes: [
       "joist hanger", "hanger", "bracket", "connector", "strap", "clip", "plate", "tie", "simpson"
-      // if you want nails to live under Hardware (your ask), keep "nail" terms here:
-       
     ]},
   { name: "Fasteners", includes: [
-      "screw", "screws", "staple", "staples", "anchor", "bolt", "bolts", "washer", "washers",
-      "collated", "1 1/4in Trim Nails 1#", "deck screw", "trim screw", "nail", "nails", "ring shank", "finish nail", "common nail", "framing nail", "self-tapping"
+      "screw", "screws", "nail", "nails", "ring shank", "finish nail", "common nail", "framing nail", "staple", "staples", "anchor", "bolt", "bolts", "washer", "washers",
+      "collated", "deck screw", "trim screw", "self-tapping"
     ]},
   { name: "PVC", includes: ["pvc","azek","versatex","cellular pvc","pvc trim","vtp"] },
   { name: "Trim", includes: ["trim","casing","base","mould","molding","crown","shoe","quarter round","brickmould","jamb"] },
@@ -77,7 +139,6 @@ const CATEGORY_RULES = [
   { name: "Doors / Windows", includes: ["door","prehang","slab","window","sash","stile","frame"] },
   { name: "Tools", includes: ["blade","saw","bit","tape","knife","hammer","drill","driver","chalk","level"] },
   { name: "Paint / Finish", includes: ["paint","primer","stain","finish"] },
-  { name: "Electrical", includes: ["electrical","wire","outlet","switch","box"] },
   { name: "Plumbing", includes: ["plumb","pipe","pvc sch","cpvc","pex","fitting","coupling","tee","elbow"] },
   { name: "Lumber", includes: ["lumber","stud","2x","x4","osb","plywood","board","4x8","rim","joist"] },
   { name: "Misc", includes: [] }
@@ -85,21 +146,12 @@ const CATEGORY_RULES = [
 
 function categorizeDescription(desc = "") {
   const d = String(desc || "");
-
-  // Force rule for nails — change "Hardware" to "Fasteners" if that’s your preferred bucket.
-  if (/\bnails?\b/i.test(d) || /\bring[-\s]?shank\b/i.test(d)) {
-    return "Hardware";
-  }
-
-  // Evaluate rules in order; the first match wins.
+  if (/\bnails?\b/i.test(d) || /\bring[-\s]?shank\b/i.test(d)) return "Fasteners";
   for (const rule of CATEGORY_RULES) {
-    if (rule.includes.some(kw => wordMatch(d, kw))) {
-      return rule.name;
-    }
+    if (rule.includes.some(kw => wordMatch(d, kw))) return rule.name;
   }
   return "Misc";
 }
-
 
 // =============== Bootstrap GAPI (Sheets v4) ===============
 function gapiLoaded() {
@@ -110,6 +162,15 @@ function gapiLoaded() {
     });
     gapiInited = true;
     console.log("[GAPI] Client initialized.");
+
+    // Try to apply a still-valid stored token BEFORE GIS init finishes.
+    if (tryLoadStoredToken()) {
+      // We have a token; go ahead and load data without any prompt.
+      showEl("table-container", true);
+      showEl("loadingBarOverlay", true);
+      listSheetData().finally(() => showEl("loadingBarOverlay", false));
+    }
+
     maybeEnableButtons();
   });
 }
@@ -120,132 +181,93 @@ function gisLoaded() {
     client_id: CLIENT_ID,
     scope: SCOPES,
     callback: async (tokenResponse) => {
-      tokenRequestInFlight = false;
-      console.log("[GIS] Token received. Access token present:", !!tokenResponse.access_token);
+      // Any time we successfully get a token (first time OR silent refresh), persist & schedule next
+      setAndPersistToken(tokenResponse);
 
-      // Hide authorize, show signout
-      showEl("authorize_button", false);
-      showEl("signout_button", true);
-
-      // Show loader bar while we fetch
-      showEl("loadingBarOverlay", true);
-
-      try {
-        await listSheetData();
-        showToast("Sheet loaded.");
-      } catch (e) {
-        console.error("Error loading sheet:", e);
-        showToast("Error loading sheet (see console).");
-      } finally {
-        showEl("loadingBarOverlay", false);
-        showEl("table-container", true);
+      // If we already had data, this was likely a refresh; otherwise load the sheet now.
+      if (!ALL_ROWS.length) {
+        try {
+          showEl("loadingBarOverlay", true);
+          await listSheetData();
+          showToast("Sheet loaded.");
+          showEl("table-container", true);
+        } catch (e) {
+          console.error("Error loading sheet:", e);
+          showToast("Error loading sheet (see console).");
+        } finally {
+          showEl("loadingBarOverlay", false);
+        }
       }
     },
   });
   gisInited = true;
   console.log("[GIS] OAuth client initialized.");
-  maybeEnableButtons();
 
-  // Try silent token (no forced picker if already granted)
-  try {
-    if (!gapi.client.getToken()?.access_token && tokenClient) {
-      tokenRequestInFlight = true;
+  // If we don't have a valid stored token, attempt a silent token right away.
+  const hasValid = !!gapi.client.getToken()?.access_token;
+  if (!hasValid) {
+    try {
       tokenClient.requestAccessToken({ prompt: "" });
+    } catch (e) {
+      console.warn("Silent token attempt failed (user may need to click Sign in):", e);
     }
-  } catch (e) {
-    console.warn("Silent token attempt failed:", e);
   }
-}
 
-async function updateAllPricingFromSheet() {
-  try {
-    showEl("loadingBarOverlay", true);
-    const { rows } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
-    const idx = new Map(rows.map(r => [`${r.sku}|${r.vendor}`, r]));
-
-    let updated = 0;
-    for (const [key, item] of CART.entries()) {
-      const r = idx.get(key);
-      if (!r) continue;
-      item.row = r;                   // refresh row
-      item.unitBase = unitBase(r);    // recompute base
-      item.unitSell = item.unitBase * MARKUP_MULT; // recompute sell
-      updated++;
-    }
-
-    renderCart();
-    persistState();
-    showToast(`Updated pricing for ${updated} item${updated === 1 ? "" : "s"}.`);
-  } catch (e) {
-    console.error("Update pricing failed:", e);
-    showToast("Failed to update pricing. See console.");
-  } finally {
-    showEl("loadingBarOverlay", false);
-  }
+  maybeEnableButtons();
 }
 
 // =============== Buttons/Handlers =========================
 function maybeEnableButtons() {
   const authBtn    = document.getElementById("authorize_button");
   const signoutBtn = document.getElementById("signout_button");
-  const updateBtn  = document.getElementById("updatePricing");
 
   if (!authBtn || !signoutBtn) {
     console.warn("Authorize/Signout buttons not found in DOM.");
     return;
   }
 
-  if (gapiInited && gisInited) {
-    authBtn.onclick = () => {
-      if (tokenRequestInFlight) {
-        console.log("[Buttons] Token request already in flight; ignoring extra click.");
-        return;
-      }
-      tokenRequestInFlight = true;
-      console.log("[Buttons] Authorize clicked.");
-      tokenClient.requestAccessToken({ prompt: "" });
-    };
-    signoutBtn.onclick = handleSignoutClick;
+  // "Sign in" — prefer silent first; if that fails, browser will show consent once.
+  authBtn.onclick = () => {
+    try { tokenClient.requestAccessToken({ prompt: "" }); }
+    catch { tokenClient.requestAccessToken({ prompt: "consent" }); }
+  };
 
-    // Enable Update Pricing when signed in
-    if (updateBtn) {
-      updateBtn.disabled = false;
-      updateBtn.onclick = updateAllPricingFromSheet;
-    }
+  // "Sign out" — local only (do NOT revoke to avoid re-consent next visit)
+  signoutBtn.onclick = () => {
+    clearLocalToken();
 
-    console.log("[Buttons] Handlers attached.");
-  } else {
-    console.log("[Buttons] Waiting for GAPI/GIS init...");
-  }
+    // Reset UI
+    showEl("authorize_button", true);
+    showEl("signout_button", false);
+
+    const tbody = document.querySelector("#data-table tbody");
+    if (tbody) tbody.innerHTML = "";
+    ALL_ROWS = [];
+    FILTERED_ROWS = [];
+    CART.clear();
+    LABOR_LINES = [];
+    renderCart();
+    showToast("Signed out (local). You won’t need to re-consent next time.");
+    // Disable filters
+    setDisabled("searchInput", true);
+    setDisabled("vendorFilter", true);
+    setDisabled("categoryFilter", true);
+    setDisabled("clearFilters", true);
+    showEl("categoryChips", false);
+  }; 
 }
 
-function handleSignoutClick() {
-  const tokenObj = gapi.client.getToken();
-  if (tokenObj && tokenObj.access_token) {
-    google.accounts.oauth2.revoke(tokenObj.access_token, () => {
-      console.log("[GIS] Token revoked.");
-      gapi.client.setToken(""); // clear in gapi
-      tokenRequestInFlight = false;
-
-      showEl("authorize_button", true);
-      showEl("signout_button", false);
-
-      // Clear UI
-      const tbody = document.querySelector("#data-table tbody");
-      if (tbody) tbody.innerHTML = "";
-      ALL_ROWS = [];
-      FILTERED_ROWS = [];
-      CART.clear();
-      LABOR_LINES = [];
-      renderCart();
-      showToast("Signed out.");
-      // Disable filters
-      setDisabled("searchInput", true);
-      setDisabled("vendorFilter", true);
-      setDisabled("categoryFilter", true);
-      setDisabled("clearFilters", true);
-      showEl("categoryChips", false);
-    });
+// Optional: Call this only if you want to force Google to forget this app’s grant.
+async function revokeEverywhere() {
+  try {
+    const tok = gapi.client.getToken();
+    if (tok?.access_token) {
+      await google.accounts.oauth2.revoke(tok.access_token);
+    }
+  } catch (e) {
+    console.warn("Revoke failed:", e);
+  } finally {
+    clearLocalToken();
   }
 }
 
@@ -975,9 +997,9 @@ function setDisabled(id, isDisabled) {
   el.disabled = !!isDisabled;
 }
 
-// Auto-refresh every 5 minutes if signed in
+// Auto-refresh every 5 minutes if signed in: silently re-pulls data (not auth)
 setInterval(() => {
-  const signedIn = document.getElementById("signout_button")?.style.display === "inline-block";
+  const signedIn = !!gapi.client.getToken()?.access_token;
   if (signedIn) {
     showEl("loadingBarOverlay", true);
     listSheetData()
