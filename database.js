@@ -169,7 +169,6 @@ function gisLoaded() {
 function maybeEnableButtons() {
   const authBtn    = document.getElementById("authorize_button");
   const signoutBtn = document.getElementById("signout_button");
-  const updateBtn  = document.getElementById("updatePricing");
   const cartFab    = document.getElementById("cartFab");
 
   if (authBtn) {
@@ -202,10 +201,6 @@ function maybeEnableButtons() {
     };
   }
 
-  if (updateBtn) {
-    updateBtn.disabled = false;
-    updateBtn.onclick = updateAllPricingFromSheet;
-  }
 
   if (cartFab) {
     cartFab.onclick = () => {
