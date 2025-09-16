@@ -202,7 +202,6 @@ tbody tr:last-child td { border-bottom: none; }
   }
 
   #categoryChips{
-    position: sticky;
     top: calc(56px + env(safe-area-inset-top) + 140px);
     z-index: 800;
     background: linear-gradient(#fff, rgba(255,255,255,.96));
