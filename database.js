@@ -26,7 +26,7 @@ let gisInited  = false;
 let ALL_ROWS = [];
 let FILTERED_ROWS = [];
 const CART = new Map();    // key: sku|vendor -> {row, qty, unitBase, unitSell}
-let LABOR_LINES = [];      // {id, name, rate, qty}
+let LABOR_LINES = [];      // {id, name, rate, qty, marginPct}  // percentage (e.g., 30 => +30%)
 
 // Cached categories
 let ALL_CATEGORIES = [];
@@ -83,35 +83,89 @@ function wordMatch(text, kw) {
   if (boundary.test(t)) return true;
   return t.includes(k);
 }
+
+/**
+ * Improved categorization:
+ * - Optional "excludes" keywords to avoid false positives.
+ * - Optional "all" keywords that must all be present.
+ * - Ordering = priority (first match wins).
+ */
 const CATEGORY_RULES = [
+  // FASTENERS first to win over generic hardware mentions
   { name: "Fasteners", includes: [
-      "screw", "screws", "nail", "nails", "ring shank", "finish nail", "common nail", "framing nail",
-      "staple", "staples", "anchor", "bolt", "bolts", "washer", "washers", "collated", "deck screw",
-      "trim screw", "self-tapping"
-    ]},
+      "screw","screws","deck screw","trim screw","self-tapping",
+      "nail","nails","roofing nail","ring shank","finish nail","common nail","framing nail",
+      "staple","staples",
+      "anchor","concrete anchor","tapcon",
+      "bolt","bolts","lag bolt","lag","carriage bolt",
+      "washer","washers","nut","nuts","collated","paslode"
+    ],
+    excludes: ["nailer","nailing","gun","adhesive"] },
+
   { name: "Hardware", includes: [
-      "joist hanger", "hanger", "bracket", "connector", "strap", "clip", "plate", "tie", "simpson"
+      "joist hanger","hanger","bracket","connector","strap","clip","plate","tie","simpson strong-tie","strong-tie","post base","hurricane clip"
+    ],
+    excludes: ["screw","nail","bolt","washer","anchor"] },
+
+  { name: "PVC", includes: ["pvc","azek","versatex","cellular pvc","pvc trim","vtp","pvc board","pvc sheet"] },
+
+  { name: "Trim", includes: [
+      "trim","casing","base","baseboard","mould","molding","crown","shoe","quarter round","qtr round","brickmould","jamb","apron","stop"
     ]},
-  { name: "PVC", includes: ["pvc","azek","versatex","cellular pvc","pvc trim","vtp"] },
-  { name: "Trim", includes: ["trim","casing","base","mould","molding","crown","shoe","quarter round","brickmould","jamb"] },
-  { name: "Siding - Vinyl", includes: ["vinyl siding","vinyl","soffit","fascia","j-channel","starter strip","starter","outside corner","ocb"] },
-  { name: "Siding - Fiber Cement", includes: ["fiber cement","hardie","james hardie","hardiplank","hardieplank"] },
-  { name: "Insulation", includes: ["insulation","batt","r-","foam","expanding foam","sealant foam"] },
-  { name: "Adhesives / Sealants", includes: ["adhesive","caulk","sealant","construction adhesive","glue","liquid nails"] },
-  { name: "Roofing", includes: ["roof","shingle","felt","underlayment","drip edge","ridge","vent"] },
-  { name: "Doors / Windows", includes: ["door","prehang","slab","window","sash","stile","frame"] },
-  { name: "Tools", includes: ["blade","saw","bit","tape","knife","hammer","drill","driver","chalk","level"] },
-  { name: "Paint / Finish", includes: ["paint","primer","stain","finish"] },
-  { name: "Electrical", includes: ["electrical","wire","outlet","switch","box"] },
-  { name: "Plumbing", includes: ["plumb","pipe","pvc sch","cpvc","pex","fitting","coupling","tee","elbow"] },
-  { name: "Lumber", includes: ["lumber","stud","2x","x4","osb","plywood","board","4x8","rim","joist"] },
+
+  { name: "Siding - Vinyl", includes: [
+      "vinyl siding","vinyl","soffit","fascia","j-channel","j channel","starter strip","starter-strip","starter",
+      "outside corner","outside corner post","ocp","ocb","underpinning","utility trim","finish trim"
+    ],
+    excludes: ["hardie","fiber cement"] },
+
+  { name: "Siding - Fiber Cement", includes: [
+      "fiber cement","hardie","james hardie","hardiplank","hardieplank","hardi","fc siding","fc trim"
+    ]},
+
+  { name: "Insulation", includes: [
+      "insulation","batt","r-","foam","spray foam","expanding foam","sealant foam","rigid foam","polyiso"
+    ]},
+
+  { name: "Adhesives / Sealants", includes: [
+      "adhesive","construction adhesive","glue","caulk","sealant","liquid nails","polyurethane sealant","silicone"
+    ]},
+
+  { name: "Roofing", includes: [
+      "roof","roofing","shingle","felt","underlayment","drip edge","ridge","ridge vent","pipe boot","ice & water","ice and water"
+    ]},
+
+  { name: "Doors / Windows", includes: [
+      "door","prehang","pre-hung","slab","window","sash","stile","frame","threshold","jamb set"
+    ]},
+
+  { name: "Tools", includes: [
+      "blade","saw","bit","tape","knife","hammer","drill","driver","chalk","level","square","nailer","stapler"
+    ]},
+
+  { name: "Paint / Finish", includes: [
+      "paint","primer","stain","finish","enamel","latex","oil-based","acrylic"
+    ]},
+
+  { name: "Plumbing", includes: [
+      "plumb","pipe","pvc sch","cpvc","pex","fitting","coupling","tee","elbow","trap","valve","supply line"
+    ]},
+
+  { name: "Lumber", includes: [
+      "lumber","stud","2x","x4","osb","plywood","board","4x8","rim","joist","pt","treated","cdx","advantech","lvl"
+    ]},
+
   { name: "Misc", includes: [] }
 ];
+
 function categorizeDescription(desc = "") {
   const d = String(desc || "");
   if (/\bliquid\s+nails\b/i.test(d)) return "Adhesives / Sealants";
   for (const rule of CATEGORY_RULES) {
-    if (rule.includes.some(kw => wordMatch(d, kw))) return rule.name;
+    const hasAll = !rule.all || rule.all.every(kw => wordMatch(d, kw));
+    const hasAny = rule.includes?.some(kw => wordMatch(d, kw));
+    const hasExclude = rule.excludes?.some(kw => wordMatch(d, kw));
+    if (hasAll && hasAny && !hasExclude) return rule.name;
   }
   return "Misc";
 }
@@ -200,7 +254,6 @@ function maybeEnableButtons() {
       showEl("categoryChips", false);
     };
   }
-
 
   if (cartFab) {
     cartFab.onclick = () => {
@@ -386,7 +439,7 @@ function formatMoney(n) {
 function escapeHtml(s) {
   return String(s ?? "")
     .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
+    .replaceAll("<","&lt>")
     .replaceAll(">","&gt;")
     .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
@@ -425,7 +478,7 @@ function renderTable(rows) {
         <td data-label="SKU">${escapeHtml(r.sku)}</td>
         <td data-label="UOM">${escapeHtml(r.uom)}</td>
         <td data-label="Description">${escapeHtml(r.description)}</td>
-        <td data-label="Qty"><input type="number" class="qty-input" min="1" step="1" value="1" id="qty_${idx}"></td>
+        <td data-label="Qty"><input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="1" id="qty_${idx}"></td>
         <td data-label="" class="row-actions">
           <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
         </td>
@@ -526,7 +579,7 @@ function addToCart(row, qty) {
   } else {
     CART.set(key, { row, qty, unitBase: ub, unitSell: us });
   }
-  if (LABOR_LINES.length === 0) addLaborLine(0, 1);
+  if (LABOR_LINES.length === 0) addLaborLine(0, 1, "Labor line", 0); // default 0% margin
   renderCart();
   showEl("cart-section", true);
   persistState();
@@ -556,10 +609,14 @@ function clearCart() {
   updateCartBadge();
 }
 
-// ====================== Labor (Qty × Rate, NO MARKUP) ====================
+// ====================== Labor (Qty × Rate × (1 + pct/100)) ====================
 let _laborIdSeq = 1;
-function addLaborLine(rate = 0, qty = 1, name = "Labor line") {
-  LABOR_LINES.push({ id: _laborIdSeq++, rate: Number(rate) || 0, qty: Math.max(1, Math.floor(qty || 1)), name });
+// marginPct is percentage (number), e.g., 30 => +30%
+function addLaborLine(rate = 0, qty = 1, name = "Labor line", marginPct = 0) {
+  const safeQty = Math.max(1, Math.floor(qty || 1));
+  const safeRate = Number(rate) || 0;
+  const safePct = Math.max(0, Number(marginPct) || 0);
+  LABOR_LINES.push({ id: _laborIdSeq++, rate: safeRate, qty: safeQty, name, marginPct: safePct });
   showEl("cart-section", true);
   renderCart();
   persistState();
@@ -589,6 +646,7 @@ function renderCart() {
         <td data-label="Description">${escapeHtml(item.row.description)}</td>
         <td data-label="Qty">
           <input
+            aria-label="Cart quantity"
             type="number"
             class="qty-input cart-qty"
             min="1"
@@ -647,12 +705,14 @@ function renderCart() {
   updateCartBadge();
 }
 
+// Labor total uses qty × rate × (1 + marginPct/100)
 function calcLaborTotal() {
   let total = 0;
   for (const l of LABOR_LINES) {
     const qty  = Math.max(1, Math.floor(Number(l.qty) || 0));
     const rate = Math.max(0, Number(l.rate) || 0);
-    total += qty * rate; // NO MARKUP
+    const pct  = Math.max(0, Number(l.marginPct) || 0);
+    total += qty * rate * (1 + pct / 100);
   }
   return total;
 }
@@ -665,13 +725,33 @@ function renderLabor() {
   existingRows.forEach(el => el.remove());
 
   for (const l of LABOR_LINES) {
+    const safeQty = Math.max(1, Math.floor(l.qty || 1));
+    const safeRate = Number(l.rate) || 0;
+    const safePct = Math.max(0, Number(l.marginPct) || 0);
+
     const row = document.createElement("div");
     row.className = "labor-row";
     row.innerHTML = `
-      <div><input type="text" class="labor-name" data-id="${l.id}" value="${escapeHtml(l.name || "Labor line")}" placeholder="Labor name"></div>
-      <div><input type="number" min="1" step="1" value="${Math.max(1, Math.floor(l.qty || 1))}" class="labor-qty" data-id="${l.id}" placeholder="Qty"></div>
-      <div><input type="number" min="0" step="0.01" value="${Number(l.rate) || 0}" class="labor-rate" data-id="${l.id}" placeholder="$/unit"></div>
-      <div><button class="btn danger remove-labor" data-id="${l.id}">Remove</button></div>
+      <div class="field">
+        <label class="field-label" for="labor-name-${l.id}">Labor name</label>
+        <input id="labor-name-${l.id}" aria-label="Labor name" type="text" class="labor-name" data-id="${l.id}" value="${escapeHtml(l.name || "Labor line")}" placeholder="Labor line">
+      </div>
+      <div class="field">
+        <label class="field-label" for="labor-qty-${l.id}">QTY</label>
+        <input id="labor-qty-${l.id}" aria-label="Labor quantity" type="number" min="1" step="1" value="${safeQty}" class="labor-qty" data-id="${l.id}" placeholder="Qty">
+      </div>
+      <div class="field">
+        <label class="field-label" for="labor-rate-${l.id}">Labor cost ($)</label>
+        <input id="labor-rate-${l.id}" aria-label="Labor cost per unit" type="number" min="0" step="0.01" value="${safeRate}" class="labor-rate" data-id="${l.id}" placeholder="$/unit">
+      </div>
+      <div class="field">
+        <label class="field-label" for="labor-margin-${l.id}">Margin (%)</label>
+        <input id="labor-margin-${l.id}" aria-label="Labor margin percent" type="number" min="0" step="1" value="${safePct}" class="labor-margin-pct" data-id="${l.id}" placeholder="e.g., 30">
+      </div>
+      <div class="field">
+        <label class="field-label">&nbsp;</label>
+        <button class="btn danger remove-labor" data-id="${l.id}">Remove</button>
+      </div>
     `;
     wrap.appendChild(row);
   }
@@ -698,6 +778,22 @@ function renderLabor() {
       const l   = LABOR_LINES.find(x => x.id === id);
       if (!l) return;
       l.rate = val;
+      document.getElementById("laborTotal").textContent = formatMoney(calcLaborTotal());
+      document.getElementById("grandTotal").textContent =
+        formatMoney(calcProductsTotal() + calcLaborTotal());
+      persistState();
+      return;
+    }
+
+    const marginEl = ev.target.closest(".labor-margin-pct");
+    if (marginEl) {
+      const id  = Number(marginEl.getAttribute("data-id"));
+      let val = Number(marginEl.value);
+      if (!Number.isFinite(val)) val = 0;
+      val = Math.max(0, val); // 0..∞; 30 => +30%
+      const l = LABOR_LINES.find(x => x.id === id);
+      if (!l) return;
+      l.marginPct = val;
       document.getElementById("laborTotal").textContent = formatMoney(calcLaborTotal());
       document.getElementById("grandTotal").textContent =
         formatMoney(calcProductsTotal() + calcLaborTotal());
@@ -767,6 +863,7 @@ function serializeState() {
       rate: Number(l.rate) || 0,
       qty: Math.max(1, Math.floor(Number(l.qty) || 1)),
       name: l.name || "Labor line",
+      marginPct: Math.max(0, Number(l.marginPct) || 0), // percentage
     })),
     laborIdSeq: typeof _laborIdSeq === "number" ? _laborIdSeq : 1,
     activeCategory: ACTIVE_CATEGORY
@@ -794,13 +891,25 @@ function applyRestoreAfterDataLoad() {
     const us = ub * MARKUP_MULT;
     CART.set(key, { row: liveRow, qty: Math.max(1, Math.floor(saved.qty || 1)), unitBase: ub, unitSell: us });
   }
-  LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => ({
-    id: l.id,
-    rate: Number(l.rate ?? l.base ?? 0) || 0,
-    qty: Math.max(1, Math.floor(Number(l.qty ?? 1) || 1)),
-    name: l.name || "Labor line",
-  })) : [];
-  if (typeof _restoreCache.laborIdSeq === "number") _laborIdSeq = _restoreCache.laborIdSeq;
+  LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => {
+    // Backwards compatibility: if older "margin" multiplier exists, convert to percent.
+    let pct = 0;
+    if (typeof l.marginPct === "number") {
+      pct = Math.max(0, Number(l.marginPct) || 0);
+    } else if (typeof l.margin === "number" && l.margin > 0) {
+      pct = Math.max(0, (Number(l.margin) - 1) * 100);
+    }
+    return {
+      id: l.id,
+      rate: Number(l.rate ?? l.base ?? 0) || 0,
+      qty: Math.max(1, Math.floor(Number(l.qty ?? 1) || 1)),
+      name: l.name || "Labor line",
+      marginPct: pct
+    };
+  }) : [];
+  if (typeof _restoreCache.laborIdSeq === "number") {
+    _laborIdSeq = _restoreCache.laborIdSeq;
+  }
   ACTIVE_CATEGORY = _restoreCache.activeCategory || "";
   _restoreCache = null;
   renderCart();
@@ -859,7 +968,7 @@ function wireControlsOnce() {
   });
 
   if (clearCartBtn) clearCartBtn.addEventListener("click", clearCart);
-  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0, 1));
+  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0, 1, "Labor line", 0)); // default 0% margin
 }
 
 // ====================== Toast/UX/Utils =========================

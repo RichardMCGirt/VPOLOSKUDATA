@@ -178,8 +178,6 @@ tbody tr:last-child td { border-bottom: none; }
 .row-actions{ display:flex; gap:8px; align-items:center; }
 
 /* Hide Vendor & SKU in the product table (ALL screen sizes) */
-#data-table thead th:nth-child(1),
-#data-table tbody td:nth-child(1),
 #data-table thead th:nth-child(2),
 #data-table tbody td:nth-child(2){
   display:none;
