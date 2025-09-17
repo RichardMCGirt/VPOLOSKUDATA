@@ -89,12 +89,6 @@ function wordMatch(text, kw) {
   return t.includes(k);
 }
 
-/**
- * Improved categorization:
- * - Optional "excludes" keywords to avoid false positives.
- * - Optional "all" keywords that must all be present.
- * - Ordering = priority (first match wins).
- */
 const CATEGORY_RULES = [
   // FASTENERS first to win over generic hardware mentions
   { name: "Fasteners", includes: [
@@ -262,13 +256,18 @@ function maybeEnableButtons() {
 
   if (cartFab) {
     cartFab.onclick = () => {
-      // ensure cart is visible, then scroll to cart table body
-      showEl("cart-section", true);
-      const target = document.querySelector("#cart-table tbody") || document.getElementById("cart-section");
-      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      // Open dedicated cart page in a new tab (Amazon-style)
+      const w = window.open("cart.html", "_blank", "noopener,noreferrer");
+      if (!w) {
+        // Fallback if popups are blocked: reveal cart section in-place
+        showEl("cart-section", true);
+        const target = document.querySelector("#cart-table tbody") || document.getElementById("cart-section");
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     };
   }
 }
+
 
 async function updateAllPricingFromSheet() {
   try {
