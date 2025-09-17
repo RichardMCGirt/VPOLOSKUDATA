@@ -13,7 +13,10 @@ const DEFAULT_GID = 0;
 const PRODUCT_TAB_FALLBACK = "DataLoad";
 const PRODUCT_RANGE        = "A1:H10000";
 
-// Margin (materials only)
+// Global default product margin (materials only). Users can override per line.
+const DEFAULT_PRODUCT_MARGIN_PCT = 30; // 30% default
+
+// Back-compat: keep these, but line pricing now uses per-item margin where set.
 const MARGIN = 0.30;
 const MARKUP_MULT = 1 + MARGIN;
 
@@ -25,8 +28,10 @@ let gisInited  = false;
 // Data state
 let ALL_ROWS = [];
 let FILTERED_ROWS = [];
-const CART = new Map();    // key: sku|vendor -> {row, qty, unitBase, unitSell}
-let LABOR_LINES = [];      // {id, name, rate, qty, marginPct}  // percentage (e.g., 30 => +30%)
+// key: sku|vendor -> {row, qty, unitBase, marginPct}
+const CART = new Map();
+// {id, name, rate, qty, marginPct}  // percentage (e.g., 30 => +30%)
+let LABOR_LINES = [];
 
 // Cached categories
 let ALL_CATEGORIES = [];
@@ -277,7 +282,7 @@ async function updateAllPricingFromSheet() {
       if (!r) continue;
       item.row = r;
       item.unitBase = unitBase(r);
-      item.unitSell = item.unitBase * MARKUP_MULT;
+      // keep per-line marginPct; unit recalculated during render
       updated++;
     }
 
@@ -450,7 +455,11 @@ function unitBase(row) {
   const cost = (row.cost != null ? Number(row.cost) : 0);
   return (px != null ? px : (mult * cost));
 }
-function unitSell(row) { return unitBase(row) * MARKUP_MULT; }
+// Compute per-item unit sell using its margin (or default)
+function itemUnitSell(item) {
+  const pct = Math.max(0, Number(item?.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0);
+  return (Number(item.unitBase) || 0) * (1 + pct / 100);
+}
 
 function renderTable(rows) {
   const table = ensureTable();
@@ -464,7 +473,7 @@ function renderTable(rows) {
         <th>SKU</th>
         <th>UOM</th>
         <th>Description</th>
-        <th style="width:120px;">Qty</th>
+        <th style="width:160px;">Qty</th>
         <th style="width:120px;"></th>
       </tr>`;
   }
@@ -573,13 +582,12 @@ function addToCart(row, qty) {
   const key = `${row.sku}|${row.vendor}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
-  const us = ub * MARKUP_MULT;
   if (existing) {
     existing.qty += qty;
   } else {
-    CART.set(key, { row, qty, unitBase: ub, unitSell: us });
+    CART.set(key, { row, qty, unitBase: ub, marginPct: DEFAULT_PRODUCT_MARGIN_PCT });
   }
-  // Default labor line: qty 0 so it doesn't add cost until user opts in
+  // Default labor section present with 0 qty so it stays $0 until used
   if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
   renderCart();
   showEl("cart-section", true);
@@ -595,17 +603,6 @@ function addLaborLine(rate = 0, qty = 0, name = "Labor line", marginPct = 0) {
   showEl("cart-section", true);
   renderCart();
   persistState();
-}
-
-function calcLaborTotal() {
-  let total = 0;
-  for (const l of LABOR_LINES) {
-    const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
-    const rate = Math.max(0, Number(l.rate) || 0);
-    const pct  = Math.max(0, Number(l.marginPct) || 0);
-    total += qty * rate * (1 + pct / 100);
-  }
-  return total;
 }
 
 function updateCartQty(key, qty) {
@@ -642,6 +639,18 @@ function removeLaborLine(id) {
   persistState();
 }
 
+// Compute labor total
+function calcLaborTotal() {
+  let total = 0;
+  for (const l of LABOR_LINES) {
+    const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
+    const rate = Math.max(0, Number(l.rate) || 0);
+    const pct  = Math.max(0, Number(l.marginPct) || 0);
+    total += qty * rate * (1 + pct / 100);
+  }
+  return total;
+}
+
 function renderCart() {
   const tbody = document.querySelector("#cart-table tbody");
   if (!tbody) return;
@@ -650,7 +659,8 @@ function renderCart() {
   let productTotal = 0;
 
   for (const [key, item] of CART.entries()) {
-    const line = item.unitSell * item.qty;
+    const unit = itemUnitSell(item);
+    const line = unit * item.qty;
     productTotal += line;
 
     rows.push(`
@@ -659,17 +669,33 @@ function renderCart() {
         <td data-label="SKU">${escapeHtml(item.row.sku)}</td>
         <td data-label="Description">${escapeHtml(item.row.description)}</td>
         <td data-label="Qty">
-          <input
-            aria-label="Cart quantity"
-            type="number"
-            class="qty-input cart-qty"
-            min="0"
-            step="1"
-            value="${item.qty}"
-            data-key="${escapeHtml(key)}">
+          <div class="stack">
+            <label class="field-label" for="cart-qty-${escapeHtml(key)}">QTY</label>
+            <input
+              id="cart-qty-${escapeHtml(key)}"
+              aria-label="Cart quantity"
+              type="number"
+              class="qty-input cart-qty"
+              min="0"
+              step="1"
+              value="${item.qty}"
+              data-key="${escapeHtml(key)}">
+            <div class="margin-override">
+              <label class="field-label" for="cart-margin-${escapeHtml(key)}">Margin (%)</label>
+              <input
+                id="cart-margin-${escapeHtml(key)}"
+                aria-label="Cart margin percent"
+                type="number"
+                class="cart-margin-pct"
+                min="0"
+                step="1"
+                value="${Math.max(0, Number(item.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0)}"
+                data-key="${escapeHtml(key)}">
+            </div>
+          </div>
         </td>
-        <td data-label="Unit">${formatMoney(item.unitSell)}</td>
-        <td data-label="Line Total">${formatMoney(line)}</td>
+        <td data-label="Unit" data-cell="unit">${formatMoney(unit)}</td>
+        <td data-label="Line Total" data-cell="line">${formatMoney(line)}</td>
         <td data-label="Action">
           <button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button>
         </td>
@@ -679,25 +705,46 @@ function renderCart() {
 
   tbody.innerHTML = rows.join("");
 
-  // Update qty (incremental)
+  // Inline updates for qty and per-line margin
   tbody.oninput = (ev) => {
-    const input = ev.target.closest(".cart-qty");
-    if (!input) return;
+    const qtyEl = ev.target.closest(".cart-qty");
+    if (qtyEl) {
+      const key = qtyEl.getAttribute("data-key");
+      const qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
+      const item = CART.get(key);
+      if (!item) return;
+      item.qty = qty;
+      const tr = qtyEl.closest("tr");
+      const unitCell = tr?.querySelector('[data-cell="unit"]');
+      const lineCell = tr?.querySelector('[data-cell="line"]');
+      const unit = itemUnitSell(item);
+      if (unitCell) unitCell.textContent = formatMoney(unit);
+      if (lineCell) lineCell.textContent = formatMoney(unit * item.qty);
+      updateTotalsOnly();
+      persistState();
+      updateCartBadge();
+      return;
+    }
 
-    const key = input.getAttribute("data-key");
-    const qty = Math.max(1, Math.floor(Number(input.value) || 0));
-    const item = CART.get(key);
-    if (!item) return;
-
-    item.qty = qty;
-
-    const tr = input.closest("tr");
-    const lineCell = tr?.querySelector("td:nth-child(6)");
-    if (lineCell) lineCell.textContent = formatMoney(item.unitSell * item.qty);
-
-    updateTotalsOnly();
-    persistState();
-    updateCartBadge();
+    const marginEl = ev.target.closest(".cart-margin-pct");
+    if (marginEl) {
+      const key = marginEl.getAttribute("data-key");
+      let pct = Number(marginEl.value);
+      if (!Number.isFinite(pct)) pct = DEFAULT_PRODUCT_MARGIN_PCT;
+      pct = Math.max(0, pct);
+      const item = CART.get(key);
+      if (!item) return;
+      item.marginPct = pct;
+      const tr = marginEl.closest("tr");
+      const unitCell = tr?.querySelector('[data-cell="unit"]');
+      const lineCell = tr?.querySelector('[data-cell="line"]');
+      const unit = itemUnitSell(item);
+      if (unitCell) unitCell.textContent = formatMoney(unit);
+      if (lineCell) lineCell.textContent = formatMoney(unit * item.qty);
+      updateTotalsOnly();
+      persistState();
+      return;
+    }
   };
 
   // Remove material items
@@ -719,17 +766,6 @@ function renderCart() {
   updateCartBadge();
 }
 
-// Labor total uses qty × rate × (1 + marginPct/100)
-function calcLaborTotal() {
-  let total = 0;
-  for (const l of LABOR_LINES) {
-    const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
-    const rate = Math.max(0, Number(l.rate) || 0);
-    const pct  = Math.max(0, Number(l.marginPct) || 0);
-    total += qty * rate * (1 + pct / 100);
-  }
-  return total;
-}
 function renderLabor() {
   const wrap = document.getElementById("labor-list");
   if (!wrap) return;
@@ -834,12 +870,11 @@ function renderLabor() {
 // helpers
 function calcProductsTotal() {
   let productTotal = 0;
-  for (const [, item] of CART.entries()) productTotal += item.unitSell * item.qty;
+  for (const [, item] of CART.entries()) productTotal += itemUnitSell(item) * item.qty;
   return productTotal;
 }
 function updateTotalsOnly() {
-  let productTotal = 0;
-  for (const [, item] of CART.entries()) productTotal += item.unitSell * item.qty;
+  const productTotal = calcProductsTotal();
   document.getElementById("productTotal").textContent = formatMoney(productTotal);
   const laborTotal = calcLaborTotal();
   document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
@@ -861,7 +896,7 @@ function serializeState() {
       key,
       qty: item.qty,
       unitBase: item.unitBase,
-      unitSell: item.unitSell,
+      marginPct: Math.max(0, Number(item.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0),
       row: {
         vendor: item?.row?.vendor ?? "",
         sku: item?.row?.sku ?? "",
@@ -875,8 +910,7 @@ function serializeState() {
     labor: LABOR_LINES.map(l => ({
       id: l.id,
       rate: Number(l.rate) || 0,
-// applyRestoreAfterDataLoad()
-qty: Math.max(0, Math.floor(Number(l.qty ?? 0) || 0)), // allow 0
+      qty: Math.max(0, Math.floor(Number(l.qty ?? 0) || 0)), // allow 0
       name: l.name || "Labor line",
       marginPct: Math.max(0, Number(l.marginPct) || 0), // percentage
     })),
@@ -903,8 +937,12 @@ function applyRestoreAfterDataLoad() {
     if (!liveRow) continue;
     if (!liveRow.category) liveRow.category = categorizeDescription(liveRow.description || "");
     const ub = unitBase(liveRow);
-    const us = ub * MARKUP_MULT;
-    CART.set(key, { row: liveRow, qty: Math.max(1, Math.floor(saved.qty || 1)), unitBase: ub, unitSell: us });
+    CART.set(key, {
+      row: liveRow,
+      qty: Math.max(1, Math.floor(saved.qty || 1)),
+      unitBase: ub,
+      marginPct: Math.max(0, Number(saved.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0)
+    });
   }
   LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => {
     // Backwards compatibility: if older "margin" multiplier exists, convert to percent.
