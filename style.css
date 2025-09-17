@@ -297,6 +297,17 @@ tbody tr:last-child td { border-bottom: none; }
     margin: 10px auto;
     max-width: 640px;
   }
+@media (max-width: 720px){
+  /* keep the Qty cell, but hide the auto label */
+  #cart-table tbody td[data-label="Qty"]{ 
+    display:grid; 
+    grid-template-columns: 1fr; 
+  }
+  #cart-table tbody td[data-label="Qty"]::before{
+    content:"";
+    display:none;
+  }
+}
 
 
   #cart-table tbody td{

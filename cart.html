@@ -192,9 +192,9 @@
           <td data-label="Vendor"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.vendor)}</span></td>
           <td data-label="SKU"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.sku)}</span></td>
           <td data-label="Description"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.description)}</span></td>
-          <td data-label="">
+          <td data-label="Qty">
             <div class="stack">
-              <label class="field-label" for="cart-qty-${escapeHtml(key)}"></label>
+              <label class="field-label" for="cart-qty-${escapeHtml(key)}">QTY</label>
               <input id="cart-qty-${escapeHtml(key)}" type="number" class="qty-input cart-qty" min="0" step="1" value="${Math.max(0, Math.floor(Number(it.qty) || 0))}" data-key="${escapeHtml(key)}" aria-label="Cart quantity">
               <div class="margin-override">
                 <label class="field-label" for="cart-margin-${escapeHtml(key)}">Margin (%)</label>
