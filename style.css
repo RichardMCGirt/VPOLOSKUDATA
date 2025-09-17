@@ -1,3 +1,4 @@
+
 /* Product & Labor Portal — CSS */
 
 /* ===== Reset & base ===== */
@@ -171,6 +172,11 @@ button:disabled { opacity:.6; cursor:not-allowed; }
 .btn.ghost{ background:transparent; }
 .row-gap{ display:flex; gap:10px; align-items:center; }
 
+/* mobile helper: let primary actions go full width when asked */
+@media (max-width: 720px){
+  .full-width-mobile{ width:100%; }
+}
+
 /* ===== Table ===== */
 #table-container{ margin-top:10px; }
 table{ width:100%; border-collapse: collapse; }
@@ -275,6 +281,9 @@ tbody tr:last-child td { border-bottom: none; }
 #cart-table thead th:nth-child(5),
 #cart-table tbody td:nth-child(5) { display: none; }
 
+/* Utility: inner span to control truncation safely */
+.cell-text{ display:block; min-width:0; }
+
 /* Mobile: cart rows as cards, cleaner labels, hide vendor/SKU */
 @media (max-width: 720px){
   #cart-table thead{ display:none; }
@@ -288,24 +297,31 @@ tbody tr:last-child td { border-bottom: none; }
     margin: 10px auto;
     max-width: 640px;
   }
-  /* hide vendor & sku in cart on mobile */
-  #cart-table tbody td:nth-child(1),
-  #cart-table tbody td:nth-child(2){ display:none; }
+
 
   #cart-table tbody td{
     border:none;
     display:grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: 112px 1fr; /* label | content */
     gap:8px;
     padding:8px 6px;
-    /* NEW: never overflow */
-    overflow-wrap:anywhere; word-break:break-word; min-width:0;
+    min-width:0; /* allow shrinking */
   }
   #cart-table tbody td::before{
     content: attr(data-label);
     color: var(--muted);
     font-weight:600;
   }
+
+  /* NEW: one-line, no-wrap with ellipsis for content */
+  #cart-table tbody td .cell-text{
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+
+
   /* qty & action alignments */
   #cart-table tbody td:nth-child(4){ align-items:center; }
   #cart-table tbody td:nth-child(7){
@@ -313,6 +329,9 @@ tbody tr:last-child td { border-bottom: none; }
     justify-content:flex-end;
     padding-top: 6px;
   }
+
+  /* buttons row may wrap; ensure nice stacking */
+  #cart-section .row-gap{ flex-wrap:wrap; }
 }
 
 /* Totals */

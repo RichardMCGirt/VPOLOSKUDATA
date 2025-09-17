@@ -1,3 +1,10 @@
+Below are full updated files with mobile no‑wrap + ellipsis in the cart, tighter mobile cards, and a couple of small, safe UX polish tweaks.
+
+---
+
+**cart.html**
+
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -70,10 +77,8 @@
       <div class="label grand">Grand Total:</div><div class="value grand" id="grandTotal">$0.00</div>
     </div>
 
-
-
     <div class="row-gap" style="justify-content:flex-end; margin-top:8px;">
-      <button class="btn primary" id="checkoutBtn">Export</button>
+      <button class="btn primary full-width-mobile" id="checkoutBtn">Export</button>
     </div>
   </section>
 
@@ -94,7 +99,7 @@
     function escapeHtml(s){
       return String(s ?? "")
         .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
-        .replaceAll('"',"&quot;").replaceAll("'","&#039;");
+        .replaceAll('"','&quot;').replaceAll("'","&#039;");
     }
     function showToast(message="Done"){
       const el = document.getElementById("toast"); if (!el) return;
@@ -190,9 +195,9 @@
         const tr = document.createElement("tr");
         tr.setAttribute("data-key", key);
         tr.innerHTML = `
-          <td data-label="Vendor">${escapeHtml(it.row?.vendor)}</td>
-          <td data-label="SKU">${escapeHtml(it.row?.sku)}</td>
-          <td data-label="Description">${escapeHtml(it.row?.description)}</td>
+          <td data-label="Vendor"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.vendor)}</span></td>
+          <td data-label="SKU"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.sku)}</span></td>
+          <td data-label="Description"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.description)}</span></td>
           <td data-label="Qty">
             <div class="stack">
               <label class="field-label" for="cart-qty-${escapeHtml(key)}">QTY</label>
@@ -203,10 +208,9 @@
               </div>
             </div>
           </td>
-          <td data-label="Unit" data-cell="unit">${formatMoney(unit)}</td>
-          <td data-label="Line Total" data-cell="line">${formatMoney(line)}</td>
-            <button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button>
-          </td>
+          <td data-label="Unit" data-cell="unit"><span class="cell-text nowrap-ellipsize">${formatMoney(unit)}</span></td>
+          <td data-label="Line Total" data-cell="line"><span class="cell-text nowrap-ellipsize">${formatMoney(line)}</span></td>
+            <td data-label="Actions"><button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button></td>
         `;
         tbody.appendChild(tr);
       }
@@ -255,8 +259,8 @@
     }
 
     function updateTotalsCellsForRow(tr, it){
-      const unitCell = tr?.querySelector('[data-cell="unit"]');
-      const lineCell = tr?.querySelector('[data-cell="line"]');
+      const unitCell = tr?.querySelector('[data-cell="unit"] .cell-text');
+      const lineCell = tr?.querySelector('[data-cell="line"] .cell-text');
       const unit = itemUnitSell(it);
       if (unitCell) unitCell.textContent = formatMoney(unit);
       const qty = Math.max(0, Math.floor(Number(it.qty) || 0));
