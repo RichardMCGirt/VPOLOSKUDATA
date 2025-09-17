@@ -579,12 +579,35 @@ function addToCart(row, qty) {
   } else {
     CART.set(key, { row, qty, unitBase: ub, unitSell: us });
   }
-  if (LABOR_LINES.length === 0) addLaborLine(0, 1, "Labor line", 0); // default 0% margin
+  // Default labor line: qty 0 so it doesn't add cost until user opts in
+  if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
   renderCart();
   showEl("cart-section", true);
   persistState();
   updateCartBadge();
 }
+// marginPct is percentage (number), e.g., 30 => +30%
+function addLaborLine(rate = 0, qty = 0, name = "Labor line", marginPct = 0) {
+  const safeQty  = Math.max(0, Math.floor(qty || 0));
+  const safeRate = Number(rate) || 0;
+  const safePct  = Math.max(0, Number(marginPct) || 0);
+  LABOR_LINES.push({ id: _laborIdSeq++, rate: safeRate, qty: safeQty, name, marginPct: safePct });
+  showEl("cart-section", true);
+  renderCart();
+  persistState();
+}
+
+function calcLaborTotal() {
+  let total = 0;
+  for (const l of LABOR_LINES) {
+    const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
+    const rate = Math.max(0, Number(l.rate) || 0);
+    const pct  = Math.max(0, Number(l.marginPct) || 0);
+    total += qty * rate * (1 + pct / 100);
+  }
+  return total;
+}
+
 function updateCartQty(key, qty) {
   const item = CART.get(key);
   if (!item) return;
@@ -611,16 +634,7 @@ function clearCart() {
 
 // ====================== Labor (Qty × Rate × (1 + pct/100)) ====================
 let _laborIdSeq = 1;
-// marginPct is percentage (number), e.g., 30 => +30%
-function addLaborLine(rate = 0, qty = 1, name = "Labor line", marginPct = 0) {
-  const safeQty = Math.max(1, Math.floor(qty || 1));
-  const safeRate = Number(rate) || 0;
-  const safePct = Math.max(0, Number(marginPct) || 0);
-  LABOR_LINES.push({ id: _laborIdSeq++, rate: safeRate, qty: safeQty, name, marginPct: safePct });
-  showEl("cart-section", true);
-  renderCart();
-  persistState();
-}
+
 function removeLaborLine(id) {
   LABOR_LINES = LABOR_LINES.filter(l => l.id !== id);
   renderCart();
@@ -649,7 +663,7 @@ function renderCart() {
             aria-label="Cart quantity"
             type="number"
             class="qty-input cart-qty"
-            min="1"
+            min="0"
             step="1"
             value="${item.qty}"
             data-key="${escapeHtml(key)}">
@@ -671,7 +685,7 @@ function renderCart() {
     if (!input) return;
 
     const key = input.getAttribute("data-key");
-    const qty = Math.max(1, Math.floor(Number(input.value) || 1));
+    const qty = Math.max(1, Math.floor(Number(input.value) || 0));
     const item = CART.get(key);
     if (!item) return;
 
@@ -709,14 +723,13 @@ function renderCart() {
 function calcLaborTotal() {
   let total = 0;
   for (const l of LABOR_LINES) {
-    const qty  = Math.max(1, Math.floor(Number(l.qty) || 0));
+    const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
     const rate = Math.max(0, Number(l.rate) || 0);
     const pct  = Math.max(0, Number(l.marginPct) || 0);
     total += qty * rate * (1 + pct / 100);
   }
   return total;
 }
-
 function renderLabor() {
   const wrap = document.getElementById("labor-list");
   if (!wrap) return;
@@ -725,9 +738,9 @@ function renderLabor() {
   existingRows.forEach(el => el.remove());
 
   for (const l of LABOR_LINES) {
-    const safeQty = Math.max(1, Math.floor(l.qty || 1));
+    const safeQty  = Math.max(0, Math.floor(l.qty || 0));
     const safeRate = Number(l.rate) || 0;
-    const safePct = Math.max(0, Number(l.marginPct) || 0);
+    const safePct  = Math.max(0, Number(l.marginPct) || 0);
 
     const row = document.createElement("div");
     row.className = "labor-row";
@@ -738,7 +751,7 @@ function renderLabor() {
       </div>
       <div class="field">
         <label class="field-label" for="labor-qty-${l.id}">QTY</label>
-        <input id="labor-qty-${l.id}" aria-label="Labor quantity" type="number" min="1" step="1" value="${safeQty}" class="labor-qty" data-id="${l.id}" placeholder="Qty">
+        <input id="labor-qty-${l.id}" aria-label="Labor quantity" type="number" min="0" step="1" value="${safeQty}" class="labor-qty" data-id="${l.id}" placeholder="Qty">
       </div>
       <div class="field">
         <label class="field-label" for="labor-rate-${l.id}">Labor cost ($)</label>
@@ -760,7 +773,7 @@ function renderLabor() {
     const qtyEl = ev.target.closest(".labor-qty");
     if (qtyEl) {
       const id  = Number(qtyEl.getAttribute("data-id"));
-      const val = Math.max(1, Math.floor(Number(qtyEl.value) || 1));
+      const val = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
       const l   = LABOR_LINES.find(x => x.id === id);
       if (!l) return;
       l.qty = val;
@@ -782,6 +795,7 @@ function renderLabor() {
       document.getElementById("grandTotal").textContent =
         formatMoney(calcProductsTotal() + calcLaborTotal());
       persistState();
+
       return;
     }
 
@@ -861,7 +875,8 @@ function serializeState() {
     labor: LABOR_LINES.map(l => ({
       id: l.id,
       rate: Number(l.rate) || 0,
-      qty: Math.max(1, Math.floor(Number(l.qty) || 1)),
+// applyRestoreAfterDataLoad()
+qty: Math.max(0, Math.floor(Number(l.qty ?? 0) || 0)), // allow 0
       name: l.name || "Labor line",
       marginPct: Math.max(0, Number(l.marginPct) || 0), // percentage
     })),
