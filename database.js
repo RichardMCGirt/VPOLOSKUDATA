@@ -12,6 +12,8 @@ const DEFAULT_GID = 0;
 // Table + UI config
 const PRODUCT_TAB_FALLBACK = "DataLoad";
 const PRODUCT_RANGE        = "A1:H10000";
+// === NO LOGIN MODE ===
+const NO_LOGIN_MODE = true;
 
 // Global default product margin (materials only). Users can override per line.
 const DEFAULT_PRODUCT_MARGIN_PCT = 30; // 30% default
@@ -177,46 +179,33 @@ function gapiLoaded() {
       discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
     });
     gapiInited = true;
-    if (tryLoadStoredToken()) {
+
+    // Authless: enable controls and load data immediately
+    try {
+      // Enable UI you previously disabled until sign-in
+      setDisabled("searchInput", false);
+      setDisabled("vendorFilter", false);
+      setDisabled("categoryFilter", false);
+      setDisabled("clearFilters", false);
+
       showEl("table-container", true);
       showEl("loadingBarOverlay", true);
-      listSheetData().finally(() => showEl("loadingBarOverlay", false));
+      await listSheetData();
+    } catch (e) {
+      console.error("Error loading sheet (no-login mode):", e);
+      showToast("Error loading sheet (see console).");
+    } finally {
+      showEl("loadingBarOverlay", false);
     }
+
+    // Hide any leftover auth buttons if they exist in DOM
+    showEl("authorize_button", false);
+    showEl("signout_button", false);
+
     maybeEnableButtons();
   });
 }
 
-// =============== Bootstrap GIS (OAuth) ====================
-function gisLoaded() {
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID,
-    scope: SCOPES,
-    callback: async (tokenResponse) => {
-      setAndPersistToken(tokenResponse);
-      if (!ALL_ROWS.length) {
-        try {
-          showEl("loadingBarOverlay", true);
-          await listSheetData();
-          showToast("Sheet loaded.");
-          showEl("table-container", true);
-        } catch (e) {
-          console.error("Error loading sheet:", e);
-          showToast("Error loading sheet (see console).");
-        } finally {
-          showEl("loadingBarOverlay", false);
-        }
-      }
-    },
-  });
-  gisInited = true;
-
-  const hasValid = !!gapi.client.getToken()?.access_token;
-  if (!hasValid) {
-    try { tokenClient.requestAccessToken({ prompt: "" }); }
-    catch (e) { console.warn("Silent token attempt failed:", e); }
-  }
-  maybeEnableButtons();
-}
 
 // =============== Buttons/Handlers =========================
 function maybeEnableButtons() {
@@ -1069,6 +1058,4 @@ document.addEventListener("DOMContentLoaded", () => {
   stageRestoreFromLocalStorage();
 });
 
-// Expose init functions
-window.gapiLoaded = gapiLoaded;
-window.gisLoaded  = gisLoaded;
+

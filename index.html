@@ -15,24 +15,18 @@
     <span id="cartCountBadge" class="badge">0</span>
   </button>
 
-  <!-- Auth/UI -->
-  <div class="auth-row">
-    <button id="authorize_button" class="btn primary">Sign in to View SKU Database</button>
-    <button id="signout_button" class="btn" style="display:none;">Sign out</button>
-  </div>
-
   <h1>Product &amp; VPO Calculator</h1>
 
   <!-- Controls -->
   <div id="controls" class="card">
-    <input id="searchInput" type="search" placeholder="Search by SKU or Description…" aria-label="Search by SKU or description" disabled />
-    <select id="vendorFilter" aria-label="Filter by vendor" disabled>
+    <input id="searchInput" type="search" placeholder="Search by SKU or Description…" aria-label="Search by SKU or description" />
+    <select id="vendorFilter" aria-label="Filter by vendor">
       <option value="">All vendors</option>
     </select>
-    <select id="categoryFilter" aria-label="Filter by category" disabled>
+    <select id="categoryFilter" aria-label="Filter by category">
       <option value="">All categories</option>
     </select>
-    <button id="clearFilters" class="btn" disabled>Clear</button>
+    <button id="clearFilters" class="btn">Clear</button>
   </div>
 
   <!-- Category chips (mobile-friendly quick filter) -->
@@ -102,7 +96,7 @@
   <!-- JS -->
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="database.js"></script>
+  <!-- Keep gapi (API key only); remove GIS -->
   <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()" async defer></script>
-  <script src="https://accounts.google.com/gsi/client" onload="gisLoaded()" async defer></script>
 </body>
 </html>

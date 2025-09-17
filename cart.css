@@ -1,0 +1,53 @@
+/* === Cart table: prevent wrapping, use ellipsis, and size columns responsively === */
+
+#cart-table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#cart-table th,
+#cart-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+/* Column sizing (tune values to your data) */
+#cart-table th:nth-child(1), #cart-table td:nth-child(1) { max-width: 12ch; } /* Vendor */
+#cart-table th:nth-child(2), #cart-table td:nth-child(2) { max-width: 16ch; } /* SKU */
+#cart-table th:nth-child(3), #cart-table td:nth-child(3) { max-width: 40ch; } /* Description */
+#cart-table th:nth-child(4), #cart-table td:nth-child(4) { width: 8ch; text-align: center; } /* Qty */
+#cart-table th:nth-child(5), #cart-table td:nth-child(5) { width: 12ch; text-align: right; } /* Unit (Sell +30%) */
+#cart-table th:nth-child(6), #cart-table td:nth-child(6) { width: 12ch; text-align: right; } /* Line Total */
+#cart-table th:nth-child(7), #cart-table td:nth-child(7) { width: 6ch;  text-align: center; } /* Actions / remove */
+
+/* Inputs shouldn't expand cells */
+#cart-table input[type="number"],
+#cart-table input[type="text"] {
+  width: 100%;
+  max-width: 8ch; /* good for Qty */
+  box-sizing: border-box;
+}
+
+/* Keep small buttons/badges inline */
+#cart-table .btn,
+#cart-table .icon-btn {
+  white-space: nowrap;
+}
+
+/* Optional: a utility you can apply in HTML to force no-wrap on specific spans */
+.nowrap { white-space: nowrap; }
+
+/* Mobile tweaks */
+@media (max-width: 640px) {
+  #cart-table { font-size: 0.92rem; }
+  #cart-table th:nth-child(3), #cart-table td:nth-child(3) { max-width: 28ch; } /* tighter description on phones */
+
+  /* If content still exceeds width, allow horizontal scroll INSIDE the cart area (not the whole page) */
+  #cart-section, #cart-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
