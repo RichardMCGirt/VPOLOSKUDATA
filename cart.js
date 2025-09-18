@@ -273,3 +273,43 @@
     // ---- Init ----
     loadState();
     renderCart();
+
+    // ---- Init ----
+loadState();
+renderCart();
+updateTotals(); // ensure totals aren’t stale on first load
+
+// Cross-tab sync: update when another tab changes the cart
+window.addEventListener("storage", (e) => {
+  if (e.key === STORAGE_KEY) {
+    loadState();
+    renderCart();
+    updateTotals();
+  }
+});
+
+// When this tab becomes visible again, re-sync
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    loadState();
+    renderCart();
+    updateTotals();
+  }
+});
+// Cross-tab: update when other tab modifies the cart
+// cart.js
+window.addEventListener("storage", (e) => {
+  if (e.key === "vanir_cart_v1") { loadState(); renderCart(); updateTotals(); }
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { loadState(); renderCart(); updateTotals(); }
+});
+if ("BroadcastChannel" in window) {
+  const bc = new BroadcastChannel("vanir_cart_bc");
+  bc.onmessage = (ev) => {
+    if (ev?.data?.type === "focus") {
+      try { window.focus(); } catch {}
+      loadState(); renderCart(); updateTotals();
+    }
+  };
+}

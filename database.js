@@ -13,6 +13,7 @@ let _pageTitle = null;           // resolved sheet title
 let _isLoadingPage = false;
 let _noMorePages = false;
 // ===== GOOGLE SHEETS + GIS SIGN-IN (popup token flow) =====
+// When adding:
 
 // --- Config ---
 const CLIENT_ID = "518347118969-drq9o3vr7auf78l16qcteor9ng4nv7qd.apps.googleusercontent.com";
@@ -40,6 +41,7 @@ const MARKUP_MULT = 1 + MARGIN;
 let tokenClient;
 let gapiInited = false;
 let gisInited  = false;
+  let headerRowIdx = 0;
 
 // Data state
 let ALL_ROWS = [];
@@ -56,7 +58,47 @@ let ACTIVE_CATEGORY = "";
 // ======== Token persistence & silent refresh ========
 const TOKEN_STORAGE_KEY = "vanir_gis_token_v1";
 let refreshTimerId = null;
+let LAST_QTY = Number(localStorage.getItem("vanir_last_qty") || 1) || 1;
 
+function qtyFromUI(qtyEl){
+  const q = Math.max(1, Math.floor(Number(qtyEl?.value) || LAST_QTY || 0));
+  LAST_QTY = q; localStorage.setItem("vanir_last_qty", String(q));
+  return q;
+}
+// Near top-level in database.js
+const CART_URL = "cart.html";
+const CART_WINDOW_NAME = "vanir_cart_tab";
+const cartChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
+
+// In maybeEnableButtons(), replace the FAB click:
+if (cartFab) {
+  cartFab.onclick = (e) => {
+    e.preventDefault();
+    const w = window.open(CART_URL, CART_WINDOW_NAME);
+    try { w && w.focus && w.focus(); } catch {}
+    try { cartChannel?.postMessage({ type: "focus" }); } catch {}
+  };
+}
+
+// Legacy shim: we now bind table clicks inside renderTable()
+function bindTableHandlers(){ /* no-op (handled in renderTable) */ }
+
+  function openOrFocusCart(e){
+    if (e) e.preventDefault();
+    const w = window.open(CART_URL, CART_WINDOW_NAME);
+    // Most browsers will re-use the same named window instead of opening a new one
+    try { w && w.focus && w.focus(); } catch(_) {}
+    // Optional: nudge the cart tab to bring itself to front (see BroadcastChannel below)
+    try { cartChannel?.postMessage({type:"focus"}); } catch(_) {}
+  }
+
+  // Wire it
+  const cartLink = document.getElementById("cartLink");
+  cartLink?.addEventListener("click", openOrFocusCart);
+  // If you have other cart buttons, wire them too:
+  // document.querySelectorAll(".open-cart").forEach(btn => btn.addEventListener("click", openOrFocusCart));
+
+  // Optional: BroadcastChannel for extra reliability (Safari/Firefox-compatible)
 function setAndPersistToken(tokenResponse) {
   if (!tokenResponse || !tokenResponse.access_token) return;
   const expiresInSec = Number(tokenResponse.expires_in || 3600);
@@ -382,7 +424,6 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
   if (!values.length) return { rows: [], bySku: {}, bySkuVendor: {} };
 
   // Identify header row
-  let headerRowIdx = 0;
   for (let r = 0; r < Math.min(5, values.length); r++) {
     const row = (values[r] || []).map(x => norm(x).toLowerCase());
     if (row.some(c => c.includes("sku")) && row.some(c => c.includes("desc"))) {
@@ -436,7 +477,7 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
   const bySku = Object.create(null);
   const bySkuVendor = Object.create(null);
   for (const r of rows) {
-    const key = `${r.sku}|${r.vendor}`;
+const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
     bySkuVendor[key] = r;
     if (!bySku[r.sku]) bySku[r.sku] = r;
   }
@@ -501,7 +542,7 @@ function renderTable(rows) {
 
   if (tbody) {
     tbody.innerHTML = rows.map((r, idx) => {
-      const key = `${r.sku}|${r.vendor}`;
+const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
       return `
       <tr data-key="${escapeHtml(key)}">
         <td data-label="Vendor">${escapeHtml(r.vendor)}</td>
@@ -603,14 +644,11 @@ const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTE
 
 // ====================== Cart ============================
 function addToCart(row, qty) {
-  const key = `${row.sku}|${row.vendor}`;
+const key = `${row.sku}|${row.vendor}|${row.uom || ''}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
-  if (existing) {
-    existing.qty += qty;
-  } else {
-    CART.set(key, { row, qty, unitBase: ub, marginPct: DEFAULT_PRODUCT_MARGIN_PCT });
-  }
+  if (existing) existing.qty += qty;
+  else CART.set(key, { row, qty, unitBase: ub, marginPct: DEFAULT_PRODUCT_MARGIN_PCT });
   // Default labor section present with 0 qty so it stays $0 until used
   if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
   renderCart();
@@ -681,13 +719,9 @@ function renderCart() {
   if (!tbody) return;
 
   const rows = [];
-  let productTotal = 0;
-
   for (const [key, item] of CART.entries()) {
     const unit = itemUnitSell(item);
-    const line = unit * item.qty;
-    productTotal += line;
-
+    const line = unit * Math.max(0, Math.floor(Number(item.qty) || 0));
     rows.push(`
       <tr data-key="${escapeHtml(key)}">
         <td data-label="Vendor">${escapeHtml(item.row.vendor)}</td>
@@ -698,98 +732,77 @@ function renderCart() {
             <label class="field-label" for="cart-qty-${escapeHtml(key)}">QTY</label>
             <input
               id="cart-qty-${escapeHtml(key)}"
-              aria-label="Cart quantity"
-              type="number"
-              class="qty-input cart-qty"
-              min="0"
-              step="1"
-              value="${item.qty}"
-              data-key="${escapeHtml(key)}">
+              type="number" class="qty-input cart-qty"
+              min="0" step="1"
+              value="${Math.max(0, Math.floor(Number(item.qty) || 0))}"
+              data-key="${escapeHtml(key)}"
+              aria-label="Cart quantity">
             <div class="margin-override">
               <label class="field-label" for="cart-margin-${escapeHtml(key)}">Margin (%)</label>
               <input
                 id="cart-margin-${escapeHtml(key)}"
-                aria-label="Cart margin percent"
-                type="number"
-                class="cart-margin-pct"
-                min="0"
-                step="1"
+                type="number" class="cart-margin-pct"
+                min="0" step="1"
                 value="${Math.max(0, Number(item.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0)}"
-                data-key="${escapeHtml(key)}">
+                data-key="${escapeHtml(key)}"
+                aria-label="Cart margin percent">
             </div>
           </div>
         </td>
-        <td data-label="Unit" data-cell="unit">${formatMoney(unit)}</td>
-        <td data-label="Line Total" data-cell="line">${formatMoney(line)}</td>
-        <td data-label="Action">
-          <button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button>
-        </td>
+        <td data-label="Unit" data-cell="unit"><span class="cell-text nowrap-ellipsize">${formatMoney(unit)}</span></td>
+        <td data-label="Line Total" data-cell="line"><span class="cell-text nowrap-ellipsize">${formatMoney(line)}</span></td>
+        <td data-label="Actions"><button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button></td>
       </tr>
     `);
   }
-
   tbody.innerHTML = rows.join("");
 
-  // Inline updates for qty and per-line margin
+  // Inline updates for qty & margin
   tbody.oninput = (ev) => {
     const qtyEl = ev.target.closest(".cart-qty");
     if (qtyEl) {
       const key = qtyEl.getAttribute("data-key");
-      const qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
       const item = CART.get(key);
       if (!item) return;
-      item.qty = qty;
-      const tr = qtyEl.closest("tr");
-      const unitCell = tr?.querySelector('[data-cell="unit"]');
-      const lineCell = tr?.querySelector('[data-cell="line"]');
-      const unit = itemUnitSell(item);
-      if (unitCell) unitCell.textContent = formatMoney(unit);
-      if (lineCell) lineCell.textContent = formatMoney(unit * item.qty);
+      item.qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
+      updateTotalsCellsForRow(qtyEl.closest("tr"), item);
       updateTotalsOnly();
       persistState();
       updateCartBadge();
       return;
     }
-
-    const marginEl = ev.target.closest(".cart-margin-pct");
-    if (marginEl) {
-      const key = marginEl.getAttribute("data-key");
-      let pct = Number(marginEl.value);
-      if (!Number.isFinite(pct)) pct = DEFAULT_PRODUCT_MARGIN_PCT;
-      pct = Math.max(0, pct);
+    const pctEl = ev.target.closest(".cart-margin-pct");
+    if (pctEl) {
+      const key = pctEl.getAttribute("data-key");
       const item = CART.get(key);
       if (!item) return;
-      item.marginPct = pct;
-      const tr = marginEl.closest("tr");
-      const unitCell = tr?.querySelector('[data-cell="unit"]');
-      const lineCell = tr?.querySelector('[data-cell="line"]');
-      const unit = itemUnitSell(item);
-      if (unitCell) unitCell.textContent = formatMoney(unit);
-      if (lineCell) lineCell.textContent = formatMoney(unit * item.qty);
+      let pct = Number(pctEl.value);
+      if (!Number.isFinite(pct)) pct = DEFAULT_PRODUCT_MARGIN_PCT;
+      item.marginPct = Math.max(0, pct);
+      updateTotalsCellsForRow(pctEl.closest("tr"), item);
       updateTotalsOnly();
       persistState();
-      return;
+      updateCartBadge();
     }
   };
 
-  // Remove material items
   tbody.onclick = (ev) => {
     const btn = ev.target.closest(".remove-item");
     if (!btn) return;
     const key = btn.getAttribute("data-key");
-    if (!key) return;
-    removeCartItem(key);
+    if (!CART.has(key)) return;
+    CART.delete(key);
+    renderCart();
+    if (CART.size === 0 && LABOR_LINES.length === 0) showEl("cart-section", false);
+    persistState();
+    updateCartBadge();
   };
 
-  // Labor + totals
+  // Re-render labor & totals
   renderLabor();
-  document.getElementById("productTotal").textContent = formatMoney(productTotal);
-  const laborTotal = calcLaborTotal();
-  document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
-  document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
-
-  updateCartBadge();
+  updateTotalsOnly();
 }
+
 
 function renderLabor() {
   const wrap = document.getElementById("labor-list");
@@ -908,8 +921,10 @@ function updateTotalsOnly() {
 function updateCartBadge() {
   const badge = document.getElementById("cartCountBadge");
   if (!badge) return;
-  badge.textContent = String(CART.size); // number of DISTINCT records/lines
+  let total = 0; for (const [, it] of CART) total += Math.max(0, it.qty|0);
+  badge.textContent = String(total);
 }
+
 
 // ========= Persistence =========
 const STORAGE_KEY = "vanir_cart_v1";
@@ -954,7 +969,7 @@ function stageRestoreFromLocalStorage() {
 }
 function applyRestoreAfterDataLoad() {
   if (!_restoreCache) { updateCartBadge(); return; }
-  const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}`, r]));
+const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}|${r.uom || ''}`, r]));
   CART.clear();
   for (const saved of _restoreCache.cart || []) {
     const key = saved.key || `${saved?.row?.sku}|${saved?.row?.vendor}`;
@@ -1223,7 +1238,7 @@ dbg("[renderTableAppend] appending rows:", rows ? rows.length : 0);
   const frag = document.createDocumentFragment();
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const key = `${r.sku}|${r.vendor}`;
+const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
     const tr = document.createElement('tr');
     tr.setAttribute('data-key', key);
     tr.innerHTML = `
@@ -1253,6 +1268,28 @@ dbg("[renderTableAppend] appending rows:", rows ? rows.length : 0);
     });
   }
 }
+// Bind once for all future renders
+function bindTableHandlersOnce(){
+  const tbody = document.querySelector("#data-table tbody");
+  if (!tbody || tbody._bound) return;
+
+  tbody.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".add-to-cart");
+    if (!btn) return;
+    const idx = Number(btn.getAttribute("data-idx") || "0");
+    const qtyInput = document.getElementById(`qty_${idx}`);
+    let qty = Number(qtyInput?.value || 1);
+    if (!Number.isFinite(qty) || qty <= 0) qty = 1;
+    const row = FILTERED_ROWS[idx]; // matches data-idx we rendered
+    if (row) addToCart(row, qty);
+  }, { passive: true });
+
+  tbody._bound = true;
+}
+
+
+// Call this once after you create the table element (and on startup)
+bindTableHandlers();
 
 function showSkeletonRows(n=6){
   const table = document.getElementById('data-table') || ensureTable();
