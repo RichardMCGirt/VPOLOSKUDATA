@@ -95,10 +95,7 @@ function bindTableHandlers(){ /* no-op (handled in renderTable) */ }
   // Wire it
   const cartLink = document.getElementById("cartLink");
   cartLink?.addEventListener("click", openOrFocusCart);
-  // If you have other cart buttons, wire them too:
-  // document.querySelectorAll(".open-cart").forEach(btn => btn.addEventListener("click", openOrFocusCart));
 
-  // Optional: BroadcastChannel for extra reliability (Safari/Firefox-compatible)
 function setAndPersistToken(tokenResponse) {
   if (!tokenResponse || !tokenResponse.access_token) return;
   const expiresInSec = Number(tokenResponse.expires_in || 3600);

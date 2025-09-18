@@ -396,3 +396,65 @@ tbody tr:last-child td { border-bottom: none; }
   }
 }
 
+/* --- Improved "Continue Browsing" button modifiers --- */
+.btn--ghost {
+  background: transparent;
+  color: var(--text, #111);
+  border: 1px solid var(--border, rgba(0,0,0,.15));
+}
+
+.btn--back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;              /* >= 44px touch height via your .btn baseline */
+  border-radius: 9999px;           /* pill shape */
+  font-weight: 600;
+  line-height: 1.1;
+  box-shadow: 0 0 0 0 transparent;
+}
+
+.btn--back .btn__icon {
+  display: inline-flex;
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+.btn--back:hover {
+  background: color-mix(in oklab, var(--brand, #2563eb) 6%, transparent);
+  border-color: color-mix(in oklab, var(--brand, #2563eb) 35%, var(--border, rgba(0,0,0,.15)));
+}
+
+.btn--back:active {
+  transform: translateY(1px);
+}
+
+.btn--back:focus-visible {
+  outline: 3px solid color-mix(in oklab, var(--brand, #2563eb) 60%, white);
+  outline-offset: 2px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.10);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .btn--back {
+    transition: background-color .2s, border-color .2s, transform .06s, box-shadow .2s;
+  }
+}
+
+/* Dark-mode friendly tweaks if you use a dark theme */
+@media (prefers-color-scheme: dark) {
+  .btn--ghost {
+    color: var(--text, #f5f5f5);
+    border-color: color-mix(in oklab, var(--border, rgba(255,255,255,.25)) 70%, transparent);
+  }
+  .btn--back:hover {
+    background: color-mix(in oklab, var(--brand, #60a5fa) 10%, transparent);
+    border-color: color-mix(in oklab, var(--brand, #60a5fa) 45%, var(--border, rgba(255,255,255,.25)));
+  }
+  .btn--back:focus-visible {
+    outline: 3px solid color-mix(in oklab, var(--brand, #60a5fa) 70%, white);
+  }
+}
+/* Hide text when the button is icon-only */
+.btn--icon-only .btn__text { display: none; }
+.btn--icon-only { gap: 0; padding: 10px; } /* tighten spacing since there's no text */
