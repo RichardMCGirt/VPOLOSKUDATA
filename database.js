@@ -578,6 +578,7 @@ function addToCart(row, qty) {
   // Default labor section present with 0 qty so it stays $0 until used
   if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
   renderCart();
+  showToast(`Added ${qty} × ${row?.sku || "item"} to cart`);
   showEl("cart-section", true);
   persistState();
   updateCartBadge();

@@ -320,7 +320,6 @@ tbody tr:last-child td { border-bottom: none; }
 
   /* NEW: one-line, no-wrap with ellipsis for content */
   #cart-table tbody td .cell-text{
-    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }

@@ -1,53 +1,367 @@
-/* === Cart table: prevent wrapping, use ellipsis, and size columns responsively === */
+/* ==========================================================================
+   style.css — Mobile-first styles (iPhone 12 & iPad optimized)
+   Tailored for cart.html structure (buttons, cards, responsive table, labor rows)
+   ========================================================================== */
 
-#cart-table {
-  table-layout: fixed;
-  width: 100%;
-  border-collapse: collapse;
+/* ---------- CSS Reset & Base ---------- */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%; /* prevent iOS zoom weirdness */
+  text-size-adjust: 100%;
+  height: 100%;
 }
 
-#cart-table th,
-#cart-table td {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: middle;
+:root {
+  /* Light theme tokens */
+  --bg: #ffffff;
+  --card: #f8fafc;
+  --text: #0f172a;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --brand: #2563eb;
+  --brand-ink: #ffffff;
+  --danger: #dc2626;
+  --danger-ink: #ffffff;
+  --focus: #38bdf8;
+  --shadow: 0 6px 24px rgba(2, 6, 23, .08);
+
+  /* Sizing & rhythm */
+  --radius: 16px;
+  --radius-sm: 12px;
+  --space-1: 6px;
+  --space-2: 10px;
+  --space-3: 14px;
+  --space-4: 18px;
+  --space-5: 24px;
+  --space-6: 28px;
+  --maxw: 980px;
+
+  /* Typography */
+  --fs-sm: .875rem;
+  --fs: 1rem;         /* iPhone 12 default (prevents zoom on inputs >=16px) */
+  --fs-lg: 1.125rem;
+  --lh: 1.4;
 }
 
-/* Column sizing (tune values to your data) */
-#cart-table th:nth-child(1), #cart-table td:nth-child(1) { max-width: 12ch; } /* Vendor */
-#cart-table th:nth-child(2), #cart-table td:nth-child(2) { max-width: 16ch; } /* SKU */
-#cart-table th:nth-child(3), #cart-table td:nth-child(3) { max-width: 40ch; } /* Description */
-#cart-table th:nth-child(4), #cart-table td:nth-child(4) { width: 8ch; text-align: center; } /* Qty */
-#cart-table th:nth-child(5), #cart-table td:nth-child(5) { width: 12ch; text-align: right; } /* Unit (Sell +30%) */
-#cart-table th:nth-child(6), #cart-table td:nth-child(6) { width: 12ch; text-align: right; } /* Line Total */
-#cart-table th:nth-child(7), #cart-table td:nth-child(7) { width: 6ch;  text-align: center; } /* Actions / remove */
-
-/* Inputs shouldn't expand cells */
-#cart-table input[type="number"],
-#cart-table input[type="text"] {
-  width: 100%;
-  max-width: 8ch; /* good for Qty */
-  box-sizing: border-box;
-}
-
-/* Keep small buttons/badges inline */
-#cart-table .btn,
-#cart-table .icon-btn {
-  white-space: nowrap;
-}
-
-/* Optional: a utility you can apply in HTML to force no-wrap on specific spans */
-.nowrap { white-space: nowrap; }
-
-/* Mobile tweaks */
-@media (max-width: 640px) {
-  #cart-table { font-size: 0.92rem; }
-  #cart-table th:nth-child(3), #cart-table td:nth-child(3) { max-width: 28ch; } /* tighter description on phones */
-
-  /* If content still exceeds width, allow horizontal scroll INSIDE the cart area (not the whole page) */
-  #cart-section, #cart-table-wrapper {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1020;
+    --card: #0f172a;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --border: #1f2937;
+    --brand: #3b82f6;
+    --danger: #ef4444;
+    --shadow: 0 6px 24px rgba(0,0,0,.35);
   }
 }
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font: 500 var(--fs)/var(--lh) system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;
+  min-height: 100%;
+  /* Safe area padding for iPhone 12 notch & home bar */
+  padding: env(safe-area-inset-top) var(--space-2) calc(env(safe-area-inset-bottom) + var(--space-2)) var(--space-2);
+  display: flex;
+  justify-content: center;
+}
+
+main, body > header, section, .container {
+  width: 100%;
+  max-width: var(--maxw);
+}
+
+/* Utility */
+.stack { display: flex; flex-direction: column; gap: var(--space-1); }
+.row-gap { display: flex; gap: var(--space-2); align-items: center; }
+.nowrap-ellipsize { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.muted-sm { color: var(--muted); font-size: var(--fs-sm); }
+.full-width-mobile { width: 100%; }
+.field-label { font-size: .8rem; color: var(--muted); }
+
+/* Focus ring – accessible & visible on dark/light */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+/* ---------- Header / Actions ---------- */
+header.cart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+  padding: 0 var(--space-1);
+}
+
+header.cart-header h1 {
+  font-size: 1.4rem;
+  margin: 0;
+}
+
+.cart-actions { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+
+/* ---------- Buttons ---------- */
+.btn {
+  --bgc: #e5e7eb;
+  --ink: #111827;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bgc);
+  color: var(--ink);
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform .05s ease, box-shadow .2s ease, background .2s ease, color .2s ease;
+  box-shadow: 0 1px 0 rgba(0,0,0,.02);
+  line-height: 1;
+}
+
+.btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.06); }
+.btn:active { transform: translateY(0); box-shadow: none; }
+
+.btn.primary { --bgc: var(--brand); --ink: var(--brand-ink); border-color: color-mix(in oklab, var(--brand) 70%, black); }
+.btn.danger  { --bgc: var(--danger); --ink: var(--danger-ink); border-color: color-mix(in oklab, var(--danger) 70%, black); }
+
+.btn:disabled,
+.btn[disabled] {
+  opacity: .6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* ---------- Cards ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  box-shadow: var(--shadow);
+}
+
+.card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+/* subtle separator */
+.sep { height: 1px; background: var(--border); margin: var(--space-3) 0; }
+
+/* ---------- Table (mobile-first) ---------- */
+#cart-table { width: 100%; border-collapse: collapse; }
+
+/* Hide table head on phones; rows become cards */
+#cart-table thead { display: none; }
+
+#cart-table tbody { display: grid; grid-template-columns: 1fr; gap: var(--space-2); }
+#cart-table tr {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+#cart-table td {
+  display: grid;
+  grid-template-columns: 42% 58%;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Left label via data-label, right actual content */
+#cart-table td::before {
+  content: attr(data-label);
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+/* Cell inner text holder */
+#cart-table td .cell-text { justify-self: end; text-align: right; }
+
+/* Quantity + margin input stack – already in markup */
+.qty-input, .cart-margin-pct,
+.labor-qty, .labor-rate, .labor-margin-pct,
+.labor-name {
+  width: 100%;
+  font-size: var(--fs);        /* >=16px to prevent iOS zoom */
+  padding: 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Actions row (remove button) – let it span */
+#cart-table td[data-label="Actions"] {
+  grid-template-columns: 1fr;
+  justify-items: end;
+}
+
+/* OPTIONAL: Hide the 'Unit (Sell +Margin%)' column on small screens to save space */
+#cart-table td[data-label="Unit"] { display: none; }
+/* OPTIONAL: If you also want to hide Vendor or SKU on small screens, uncomment:
+#cart-table td[data-label="Vendor"],
+#cart-table td[data-label="SKU"] { display: none; }
+*/
+
+/* ---------- Labor block ---------- */
+#labor-list { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+#labor-list .labor-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: var(--space-1); border-bottom: 1px dashed var(--border);
+}
+#labor-list .labor-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+}
+#labor-list .labor-row .field { display: grid; gap: 6px; }
+/* Make remove button align baseline for tidy rows */
+#labor-list .labor-row .field:last-child { align-self: end; }
+
+/* ---------- Totals ---------- */
+#totals {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 8px;
+  font-size: var(--fs-lg);
+}
+#totals .label { color: var(--muted); font-weight: 600; }
+#totals .value { font-variant-numeric: tabular-nums; }
+#totals .label.grand, #totals .value.grand { font-weight: 800; font-size: calc(var(--fs-lg) + .05rem); }
+
+/* ---------- Toast ---------- */
+#toast {
+  position: fixed;
+  right: 16px;
+  bottom: calc(env(safe-area-inset-bottom) + 16px);
+  background: rgba(17, 24, 39, .96);
+  color: #fff;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: var(--fs);
+  line-height: 1;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: opacity .25s ease, transform .25s ease, visibility .25s ease;
+  z-index: 9999;
+}
+#toast.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* ---------- iPhone 12 specific niceties ---------- */
+/* iPhone 12 width is 390 CSS px in portrait. We keep it fluid but ensure tap targets & layout look great. */
+@media (max-width: 420px) {
+  header.cart-header h1 { font-size: 1.25rem; }
+  .btn { padding: 12px 14px; }
+  #labor-list .labor-row {
+    grid-template-columns: 1fr;  /* single column on small phones */
+  }
+}
+
+/* ---------- iPad & larger: bring back table head & multi-column rows ---------- */
+@media (min-width: 768px) {
+  /* iPad portrait+ */
+  #cart-table thead {
+    display: table-header-group;
+  }
+
+  #cart-table { border-collapse: separate; border-spacing: 0; }
+  #cart-table thead th {
+    text-align: left;
+    font-size: .9rem;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+    position: sticky; top: 0; background: var(--card);
+    z-index: 1;
+  }
+
+  #cart-table tbody {
+    display: table-row-group;
+    gap: 0;
+  }
+  #cart-table tr {
+    display: table-row;
+    background: transparent;
+    box-shadow: none;
+    border: none;
+    padding: 0;
+  }
+  #cart-table td {
+    display: table-cell;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  #cart-table td::before { content: none; }
+
+  /* Show Unit column again on iPad+ */
+  #cart-table td[data-label="Unit"] { display: table-cell; }
+
+  /* Zebra rows for readability */
+  #cart-table tbody tr:nth-child(odd) { background: color-mix(in oklab, var(--card) 92%, transparent); }
+  #cart-table tbody tr:hover { background: color-mix(in oklab, var(--card) 80%, transparent); }
+
+  .full-width-mobile { width: auto; }
+}
+
+/* ---------- Large screens: widen rhythm gently ---------- */
+@media (min-width: 1024px) {
+  header.cart-header { margin: var(--space-3) 0 var(--space-4); }
+  .card { padding: var(--space-4); }
+  #totals { font-size: 1.2rem; }
+}
+
+/* ---------- Optional helpers (uncomment as needed) ---------- */
+/* Hide ONLY the word "Qty" in the table header (keeps column). 
+   Note: Pure CSS can't match text, so we target the 4th column position.
+   Uncomment if desired.
+#cart-table thead th:nth-child(4) {
+  text-indent: -9999px; line-height: 0; white-space: nowrap; overflow: hidden;
+}
+*/
+
+/* Hide a specific column header & cells by index (example for Unit column):
+#cart-table thead th:nth-child(5) { display: none; }
+#cart-table tbody td:nth-child(5) { display: none; }
+*/
