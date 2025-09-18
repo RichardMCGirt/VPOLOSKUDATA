@@ -1,367 +1,398 @@
 /* ==========================================================================
-   style.css — Mobile-first styles (iPhone 12 & iPad optimized)
-   Tailored for cart.html structure (buttons, cards, responsive table, labor rows)
+   style.css — Mobile-first, iPhone 13 & iPad polish
+   Works for both index.html (catalog) and cart.html
    ========================================================================== */
 
-/* ---------- CSS Reset & Base ---------- */
+/* ---------- Reset & base ---------- */
 *,
 *::before,
 *::after { box-sizing: border-box; }
 
 html {
-  -webkit-text-size-adjust: 100%; /* prevent iOS zoom weirdness */
+  -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   height: 100%;
+  scroll-behavior: smooth;
 }
 
-:root {
+:root{
   /* Light theme tokens */
   --bg: #ffffff;
-  --card: #f8fafc;
+  --card: #ffffff;
   --text: #0f172a;
-  --muted: #64748b;
-  --border: #e2e8f0;
-  --brand: #2563eb;
-  --brand-ink: #ffffff;
-  --danger: #dc2626;
-  --danger-ink: #ffffff;
-  --focus: #38bdf8;
-  --shadow: 0 6px 24px rgba(2, 6, 23, .08);
+  --muted: #6b7280;
+  --border:#e5e7eb;
+  --thead:#f7f7f7;
+  --thead-2:#fffef7;
+  --hover:#fafafa;
+  --brand:#0f62fe;
+  --brand-ink:#ffffff;
+  --danger:#e11d48;
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
 
-  /* Sizing & rhythm */
+  /* Rhythm */
   --radius: 16px;
   --radius-sm: 12px;
-  --space-1: 6px;
-  --space-2: 10px;
-  --space-3: 14px;
-  --space-4: 18px;
-  --space-5: 24px;
-  --space-6: 28px;
+  --gap: 12px;
+  --pad: 12px;
   --maxw: 980px;
 
-  /* Typography */
-  --fs-sm: .875rem;
-  --fs: 1rem;         /* iPhone 12 default (prevents zoom on inputs >=16px) */
+  /* Type (≥16px prevents iOS zoom on inputs) */
+  --fs-sm: .9rem;
+  --fs:    1rem;
   --fs-lg: 1.125rem;
-  --lh: 1.4;
+  --lh:    1.45;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b1020;
-    --card: #0f172a;
-    --text: #e5e7eb;
-    --muted: #9ca3af;
-    --border: #1f2937;
-    --brand: #3b82f6;
-    --danger: #ef4444;
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0b1020;
+    --card:#0f172a;
+    --text:#e5e7eb;
+    --muted:#a1a1aa;
+    --border:#1f2937;
+    --thead:#101827;
+    --thead-2:#0f172a;
+    --hover:#111827;
+    --brand:#3b82f6;
+    --danger:#ef4444;
     --shadow: 0 6px 24px rgba(0,0,0,.35);
   }
 }
 
-body {
-  margin: 0;
-  color: var(--text);
-  background: var(--bg);
-  font: 500 var(--fs)/var(--lh) system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;
-  min-height: 100%;
-  /* Safe area padding for iPhone 12 notch & home bar */
-  padding: env(safe-area-inset-top) var(--space-2) calc(env(safe-area-inset-bottom) + var(--space-2)) var(--space-2);
-  display: flex;
-  justify-content: center;
+body{
+  margin:0;
+  color:var(--text);
+  background:var(--bg);
+  font: 500 var(--fs)/var(--lh) system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;
+  min-height:100%;
+  padding: env(safe-area-inset-top) var(--pad)
+           calc(env(safe-area-inset-bottom) + var(--pad)) var(--pad);
+  display:flex;
+  justify-content:center;
+  overflow-x:hidden; /* never allow horizontal scroll */
 }
 
-main, body > header, section, .container {
-  width: 100%;
-  max-width: var(--maxw);
+main, body > header, section, .container { width:100%; max-width:var(--maxw); }
+
+h1{ margin:10px 0 8px; font-weight:700; }
+.muted{ color:var(--muted); opacity:.95; font-size:.92rem; }
+.muted-sm{ color:var(--muted); font-size:var(--fs-sm); }
+
+img, svg{ max-width:100%; height:auto; }
+
+/* Utilities */
+.stack{ display:flex; flex-direction:column; gap:8px; }
+.row-gap{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.nowrap-ellipsize{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.full-width-mobile{ width:100%; }
+.field-label{ font-size:.8rem; color:var(--muted); }
+
+:where(button,a,input,select,textarea):focus-visible{
+  outline:2px solid #38bdf8;
+  outline-offset:2px;
+  border-radius:10px;
 }
-
-/* Utility */
-.stack { display: flex; flex-direction: column; gap: var(--space-1); }
-.row-gap { display: flex; gap: var(--space-2); align-items: center; }
-.nowrap-ellipsize { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.muted-sm { color: var(--muted); font-size: var(--fs-sm); }
-.full-width-mobile { width: 100%; }
-.field-label { font-size: .8rem; color: var(--muted); }
-
-/* Focus ring – accessible & visible on dark/light */
-:where(button, a, input, select, textarea):focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: 10px;
-}
-
-/* ---------- Header / Actions ---------- */
-header.cart-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-2);
-  margin: var(--space-2) 0 var(--space-3);
-  padding: 0 var(--space-1);
-}
-
-header.cart-header h1 {
-  font-size: 1.4rem;
-  margin: 0;
-}
-
-.cart-actions { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
 
 /* ---------- Buttons ---------- */
-.btn {
-  --bgc: #e5e7eb;
-  --ink: #111827;
-  appearance: none;
-  -webkit-appearance: none;
-  border: 1px solid var(--border);
-  background: var(--bgc);
-  color: var(--ink);
-  padding: 12px 14px;
-  border-radius: var(--radius-sm);
-  font-weight: 600;
-  text-decoration: none;
-  cursor: pointer;
-  transition: transform .05s ease, box-shadow .2s ease, background .2s ease, color .2s ease;
-  box-shadow: 0 1px 0 rgba(0,0,0,.02);
-  line-height: 1;
+.btn{
+  --bgc:#fff;
+  --ink:#111827;
+  border:1px solid var(--border);
+  background:var(--bgc);
+  color:var(--ink);
+  padding:12px 14px;
+  border-radius:12px;
+  font-weight:700;
+  cursor:pointer;
+  transition: box-shadow .15s ease, transform .03s ease, background .2s ease, color .2s ease;
+  box-shadow: 0 1px 0 rgba(0,0,0,.04);
+  line-height:1;
 }
-
-.btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.06); }
-.btn:active { transform: translateY(0); box-shadow: none; }
-
-.btn.primary { --bgc: var(--brand); --ink: var(--brand-ink); border-color: color-mix(in oklab, var(--brand) 70%, black); }
-.btn.danger  { --bgc: var(--danger); --ink: var(--danger-ink); border-color: color-mix(in oklab, var(--danger) 70%, black); }
-
-.btn:disabled,
-.btn[disabled] {
-  opacity: .6;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
+.btn:hover{ box-shadow: 0 2px 10px rgba(0,0,0,.06); transform: translateY(-1px); }
+.btn:active{ transform: translateY(0); box-shadow:none; }
+.btn.primary{ --bgc:var(--brand); --ink:var(--brand-ink); border-color: color-mix(in oklab, var(--brand) 70%, black); }
+.btn.danger{  --bgc:#fff0f0; --ink:#9b1c1c; border-color: color-mix(in oklab, var(--danger) 70%, white); }
+.btn:disabled{ opacity:.6; cursor:not-allowed; transform:none; box-shadow:none; }
 
 /* ---------- Cards ---------- */
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-3);
-  box-shadow: var(--shadow);
+.card{
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  background:var(--card);
+  box-shadow:var(--shadow);
+  padding:12px;
 }
+.card > header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
 
-.card > header {
-  display: flex;
+/* ---------- Floating cart FAB ---------- */
+.cart-fab{
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 10000;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-
-/* subtle separator */
-.sep { height: 1px; background: var(--border); margin: var(--space-3) 0; }
-
-/* ---------- Table (mobile-first) ---------- */
-#cart-table { width: 100%; border-collapse: collapse; }
-
-/* Hide table head on phones; rows become cards */
-#cart-table thead { display: none; }
-
-#cart-table tbody { display: grid; grid-template-columns: 1fr; gap: var(--space-2); }
-#cart-table tr {
-  display: grid;
-  grid-template-columns: 1fr;
   gap: 8px;
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
+  background: var(--brand);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 14px;
+  box-shadow: 0 6px 24px rgba(15, 98, 254, .25);
+  cursor: pointer;
+}
+.cart-fab .badge{
+  min-width: 22px; height: 22px; padding: 0 6px;
+  border-radius: 999px; background:#fff; color:#111827;
+  font-weight:700; display:inline-flex; align-items:center; justify-content:center; font-size:.85rem;
 }
 
-#cart-table td {
-  display: grid;
-  grid-template-columns: 42% 58%;
-  align-items: center;
-  gap: 10px;
+/* ---------- Controls (catalog) ---------- */
+#controls{
+  display:grid;
+  grid-template-columns: 1fr 220px 200px 120px;
+  gap: var(--gap);
+  align-items:center;
+  margin: 10px 0;
 }
-
-/* Left label via data-label, right actual content */
-#cart-table td::before {
-  content: attr(data-label);
-  font-size: .8rem;
-  color: var(--muted);
+input[type="search"], select, input[type="number"]{
+  width:100%;
+  min-width:0;
+  padding:12px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:var(--bg);
+  color:var(--text);
+  font-size:16px; /* stop iOS zoom */
 }
+input[type="search"]:disabled, select:disabled, button:disabled{ opacity:.6; cursor:not-allowed; }
 
-/* Cell inner text holder */
-#cart-table td .cell-text { justify-self: end; text-align: right; }
+/* ---------- Chips scroller ---------- */
+.chips{ display:flex; gap:8px; flex-wrap:nowrap; align-items:center; padding:8px 6px; }
+.scroller{ overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:thin; border:1px dashed var(--border); border-radius:12px; margin:8px 0 12px; }
+.chip{ white-space:nowrap; padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:#fff; cursor:pointer; user-select:none; font-size:.92rem; }
+.chip.active{ background:var(--brand); color:#fff; border-color:var(--brand); }
 
-/* Quantity + margin input stack – already in markup */
-.qty-input, .cart-margin-pct,
-.labor-qty, .labor-rate, .labor-margin-pct,
-.labor-name {
-  width: 100%;
-  font-size: var(--fs);        /* >=16px to prevent iOS zoom */
-  padding: 12px 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg);
-  color: var(--text);
-  outline: none;
+/* ---------- Product table ---------- */
+#table-container{ margin-top:10px; }
+table{ width:100%; border-collapse:collapse; }
+thead th{
+  background:var(--thead);
+  position:sticky; top:0; z-index:1;
+  text-align:left; padding:10px; border-bottom:1px solid var(--border);
+  font-weight:700; font-size:.95rem;
 }
+tbody td{ padding:8px 10px; border-bottom:1px solid #eee; vertical-align:middle; }
+tbody tr:hover{ background:var(--hover); }
+tbody tr:last-child td { border-bottom: none; }
+.qty-input{ width:90px; padding:10px; border:1px solid var(--border); border-radius: 10px; }
 
-input[type="number"] {
-  -moz-appearance: textfield;
-  appearance: textfield;
+/* ---------- Cart section ---------- */
+#cart-section{ margin:18px 0; overflow:hidden; scroll-margin-top: 80px; }
+#cart-section header{
+  display:flex; justify-content:space-between; align-items:center;
+  background:var(--thead); border-bottom:1px solid var(--border);
+  padding:10px 12px; border-top-left-radius:8px; border-top-right-radius:8px;
 }
+/* Cart table */
+#cart-table { width:100%; border-collapse:collapse; }
+#cart-table thead th{ background:var(--thead-2); }
+#cart-table tbody td { font-size:.95rem; }
+.cell-text{ display:block; min-width:0; }
 
-input[type="number"]::-webkit-outer-spin-button,
-input[type="number"]::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-/* Actions row (remove button) – let it span */
-#cart-table td[data-label="Actions"] {
-  grid-template-columns: 1fr;
-  justify-items: end;
-}
-
-/* OPTIONAL: Hide the 'Unit (Sell +Margin%)' column on small screens to save space */
-#cart-table td[data-label="Unit"] { display: none; }
-/* OPTIONAL: If you also want to hide Vendor or SKU on small screens, uncomment:
-#cart-table td[data-label="Vendor"],
-#cart-table td[data-label="SKU"] { display: none; }
-*/
+/* Hide "Unit (Sell +…)" on larger screens too if you want a cleaner cart */
+#cart-table thead th:nth-child(5),
+#cart-table tbody td:nth-child(5){ display:none; }
 
 /* ---------- Labor block ---------- */
-#labor-list { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
-#labor-list .labor-head {
-  display: flex; justify-content: space-between; align-items: center;
-  padding-bottom: var(--space-1); border-bottom: 1px dashed var(--border);
+#labor-list{ display:grid; gap:12px; margin-top:12px; }
+#labor-list .labor-head{
+  display:flex; justify-content:space-between; align-items:center;
+  padding-bottom:6px; border-bottom:1px dashed var(--border);
 }
-#labor-list .labor-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-2);
+#labor-list .labor-row{
+  display:grid; grid-template-columns: repeat(4, 1fr);
+  gap:12px; border:1px solid var(--border); border-radius:16px; background:var(--card); padding:12px;
 }
-#labor-list .labor-row .field { display: grid; gap: 6px; }
-/* Make remove button align baseline for tidy rows */
-#labor-list .labor-row .field:last-child { align-self: end; }
+#labor-list .labor-row .field{ display:grid; gap:6px; }
+#labor-list .labor-row .field:last-child{ align-self:end; }
 
 /* ---------- Totals ---------- */
-#totals {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  column-gap: 12px;
-  row-gap: 8px;
-  font-size: var(--fs-lg);
+#totals{
+  display:grid; grid-template-columns: 1fr auto;
+  gap:10px; align-items:center; padding:12px; border-top:1px dashed var(--border);
 }
-#totals .label { color: var(--muted); font-weight: 600; }
-#totals .value { font-variant-numeric: tabular-nums; }
-#totals .label.grand, #totals .value.grand { font-weight: 800; font-size: calc(var(--fs-lg) + .05rem); }
+#totals .label{ color:var(--muted); font-weight:700; text-align:right; padding-right:8px; }
+#totals .value{ font-variant-numeric: tabular-nums; }
+#totals .label.grand, #totals .value.grand{ font-weight:800; font-size: calc(var(--fs-lg) + .05rem); }
 
 /* ---------- Toast ---------- */
-#toast {
-  position: fixed;
-  right: 16px;
+#toast{
+  position:fixed; right:16px;
   bottom: calc(env(safe-area-inset-bottom) + 16px);
-  background: rgba(17, 24, 39, .96);
-  color: #fff;
-  padding: 10px 12px;
-  border-radius: 12px;
-  font-size: var(--fs);
-  line-height: 1;
-  box-shadow: var(--shadow);
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(8px);
+  background: rgba(17,24,39,.96); color:#fff;
+  padding:10px 12px; border-radius:12px; font-size:var(--fs);
+  line-height:1; box-shadow:var(--shadow);
+  opacity:0; visibility:hidden; transform: translateY(8px);
   transition: opacity .25s ease, transform .25s ease, visibility .25s ease;
-  z-index: 9999;
+  z-index:9999;
 }
-#toast.show {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
+#toast.show{ opacity:1; visibility:visible; transform:translateY(0); }
+
+/* ==========================================================================
+   Mobile (phones, incl. iPhone 13/12 390px portrait)
+   ========================================================================== */
+@media (max-width: 720px){
+  /* Header & controls stack nicely */
+  h1{ text-align:center; font-size:1.25rem; margin:8px 0; }
+  #controls{
+    grid-template-columns: 1fr;
+    position: sticky;
+    top: calc(56px + env(safe-area-inset-top));
+    z-index: 900;
+    background: color-mix(in oklab, var(--card) 92%, transparent);
+    backdrop-filter: saturate(1.05) blur(6px);
+    border:1px solid var(--border);
+    box-shadow:var(--shadow);
+  }
+
+  #categoryChips{
+    position: sticky;
+    top: calc(56px + env(safe-area-inset-top) + 140px);
+    z-index:800;
+    background: linear-gradient(var(--card), color-mix(in oklab, var(--card) 96%, transparent));
+    border:1px dashed var(--border);
+    border-radius:12px;
+    margin-top:8px;
+  }
+
+  /* Product table → cards */
+  #table-container { overflow:visible; }
+  #data-table, #data-table tbody, #data-table tr, #data-table td{ display:block; width:100%; }
+  #data-table thead{ display:none; }
+  #data-table tbody tr{
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:10px 10px 12px;
+    margin:10px auto;
+    background:var(--card);
+    box-shadow:var(--shadow);
+    max-width:640px;
+  }
+  #data-table tbody td{
+    border:none;
+    display:flex; justify-content:space-between; gap:10px; padding:8px 6px;
+  }
+  #data-table tbody td::before{ content: attr(data-label); color:var(--muted); font-weight:700; }
+  .qty-input{ width:76px; }
+
+  /* Cart rows → cards */
+  #cart-table thead{ display:none; }
+  #cart-table, #cart-table tbody, #cart-table tr, #cart-table td{ display:block; width:100%; }
+  #cart-table tbody tr{
+    border:1px solid var(--border);
+    border-radius:16px;
+    background:var(--card);
+    box-shadow:var(--shadow);
+    padding:10px;
+    margin:10px auto;
+    max-width:640px;
+  }
+  #cart-table tbody td{
+    border:none;
+    display:grid;
+    grid-template-columns: 114px 1fr; /* label | content */
+    gap:8px; padding:8px 6px; min-width:0;
+  }
+  #cart-table tbody td::before{ content: attr(data-label); color:var(--muted); font-weight:700; }
+  #cart-table tbody td .cell-text{ overflow:hidden; text-overflow:ellipsis; }
+
+  /* Keep the QTY cell cleaner (hide auto label) */
+  #cart-table tbody td[data-label="Qty"]{ grid-template-columns: 1fr; }
+  #cart-table tbody td[data-label="Qty"]::before{ content:""; display:none; }
+
+  /* Hide heavy columns on phones */
+  #cart-table tbody td[data-label="Vendor"],
+  #cart-table tbody td[data-label="SKU"],
+  #cart-table tbody td[data-label="Unit"]{ display:none; }
+
+  /* Labor grid → 2 columns */
+  #labor-list .labor-row{ grid-template-columns: 1fr 1fr; }
+  #labor-list .labor-row .field:last-child{ justify-self:end; }
+
+  /* Allow primary actions to stretch */
+  .full-width-mobile{ width:100%; }
 }
 
-/* ---------- iPhone 12 specific niceties ---------- */
-/* iPhone 12 width is 390 CSS px in portrait. We keep it fluid but ensure tap targets & layout look great. */
-@media (max-width: 420px) {
-  header.cart-header h1 { font-size: 1.25rem; }
-  .btn { padding: 12px 14px; }
-  #labor-list .labor-row {
-    grid-template-columns: 1fr;  /* single column on small phones */
+/* ==========================================================================
+   iPad polish (portrait + landscape)
+   - Looser density than desktop, denser than phone
+   ========================================================================== */
+@media (min-width: 768px) and (max-width: 1024px){
+  body{ padding-left:max(var(--pad), env(safe-area-inset-left)); padding-right:max(var(--pad), env(safe-area-inset-right)); }
+  #controls{ grid-template-columns: 1.2fr 0.8fr 0.8fr 0.6fr; }
+  .qty-input{ width:84px; }
+  #labor-list .labor-row{ grid-template-columns: repeat(4, 1fr); }
+}
+
+/* ==========================================================================
+   Sticky bottom action bar (phones)
+   ========================================================================== */
+@media (max-width: 720px){
+  .sticky-actions{
+    position: sticky;
+    bottom: 0;
+    z-index: 950;
+    background: color-mix(in oklab, var(--card) 98%, transparent);
+    backdrop-filter: saturate(1.05) blur(6px);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px;
+    margin-top: 8px;
+    box-shadow: var(--shadow);
   }
 }
 
-/* ---------- iPad & larger: bring back table head & multi-column rows ---------- */
-@media (min-width: 768px) {
-  /* iPad portrait+ */
-  #cart-table thead {
-    display: table-header-group;
+/* === Mobile cart fixes (place at end of style.css) === */
+
+/* 1) Don't clip buttons/cards inside the cart */
+#cart-section { overflow: visible; }
+
+/* 2) Friendlier card layout for cart rows on small screens */
+@media (max-width: 720px){
+  /* Cell = [label | content]; give labels a narrower, fixed rail */
+  #cart-table tbody td{
+    grid-template-columns: 110px 1fr;   /* was ~42%/58% */
+    align-items: start;
+    padding: 10px 12px;                 /* a little more right padding */
   }
 
-  #cart-table { border-collapse: separate; border-spacing: 0; }
-  #cart-table thead th {
-    text-align: left;
-    font-size: .9rem;
-    color: var(--muted);
-    border-bottom: 1px solid var(--border);
-    padding: 10px 12px;
-    position: sticky; top: 0; background: var(--card);
-    z-index: 1;
+  /* Quantity cell keeps its special stacking */
+  #cart-table tbody td[data-label="Qty"]{
+    grid-template-columns: 1fr;
+  }
+  #cart-table tbody td[data-label="Qty"]::before{
+    content:""; display:none;
   }
 
-  #cart-table tbody {
-    display: table-row-group;
-    gap: 0;
+  /* Actions cell: just the button, don’t force a label rail */
+  #cart-table tbody td[data-label="Actions"]{
+    grid-template-columns: 1fr;
+    justify-items: end;
   }
-  #cart-table tr {
-    display: table-row;
-    background: transparent;
-    box-shadow: none;
-    border: none;
-    padding: 0;
+
+  /* 3) Stop “Description … P/S” shards — let text wrap, left-align values */
+  #cart-table tbody td .cell-text{
+    white-space: normal;         /* allow wrapping */
+    overflow: visible;
+    text-overflow: clip;
+    text-align: left;            /* was right-aligned */
   }
-  #cart-table td {
-    display: table-cell;
-    padding: 12px;
-    border-bottom: 1px solid var(--border);
-    vertical-align: middle;
+
+  /* 4) Keep buttons inside the card bounds */
+  #cart-table tbody td .btn{
+    max-width: 100%;
   }
-  #cart-table td::before { content: none; }
-
-  /* Show Unit column again on iPad+ */
-  #cart-table td[data-label="Unit"] { display: table-cell; }
-
-  /* Zebra rows for readability */
-  #cart-table tbody tr:nth-child(odd) { background: color-mix(in oklab, var(--card) 92%, transparent); }
-  #cart-table tbody tr:hover { background: color-mix(in oklab, var(--card) 80%, transparent); }
-
-  .full-width-mobile { width: auto; }
 }
 
-/* ---------- Large screens: widen rhythm gently ---------- */
-@media (min-width: 1024px) {
-  header.cart-header { margin: var(--space-3) 0 var(--space-4); }
-  .card { padding: var(--space-4); }
-  #totals { font-size: 1.2rem; }
-}
-
-/* ---------- Optional helpers (uncomment as needed) ---------- */
-/* Hide ONLY the word "Qty" in the table header (keeps column). 
-   Note: Pure CSS can't match text, so we target the 4th column position.
-   Uncomment if desired.
-#cart-table thead th:nth-child(4) {
-  text-indent: -9999px; line-height: 0; white-space: nowrap; overflow: hidden;
-}
-*/
-
-/* Hide a specific column header & cells by index (example for Unit column):
-#cart-table thead th:nth-child(5) { display: none; }
-#cart-table tbody td:nth-child(5) { display: none; }
-*/

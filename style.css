@@ -1,6 +1,4 @@
 
-/* Product & Labor Portal — CSS */
-
 /* ===== Reset & base ===== */
 *,
 *::before,
@@ -188,7 +186,6 @@ thead th{
 }
 tbody td{ padding:8px 10px; border-bottom:1px solid #eee; vertical-align: middle; }
 /* NEW: allow wrapping of long content that would otherwise overflow */
-tbody td{ overflow-wrap:anywhere; word-break:break-word; }
 
 tbody tr:hover{ background:var(--hover); }
 tbody tr:last-child td { border-bottom: none; }
@@ -434,3 +431,22 @@ tbody tr:last-child td { border-bottom: none; }
 
 /* ===== Helpers ===== */
 .hidden{ display:none !important; }
+
+
+
+/* Performance: skip work off-screen for long lists */
+#data-table tbody tr,
+#cart-table tbody tr {
+  content-visibility: auto;
+  contain-intrinsic-size: 1200px 64px;
+}
+
+/* Skeleton rows */
+.row-skeleton td { padding: 10px; }
+.sk-line{
+  height: 12px;
+  background: #eee;
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.sk-line.short{ width: 40%; }

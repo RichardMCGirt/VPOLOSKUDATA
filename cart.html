@@ -21,23 +21,16 @@
     .cart-note { margin: 8px 0 14px; }
     .sep { height:1px; background:var(--border); margin:12px 0; }
   </style>
-</head>
-<body>
-  <header class="cart-header">
-    <div>
-      <h1></h1>
-    </div>
-    <div class="cart-actions">
-      <a href="index.html" class="btn">← Continue Browsing</a>
-      <button id="clearCart" class="btn danger">Clear All</button>
-    </div>
-  </header>
-  
+
 
   <section id="cart-section" class="card">
     <header>
-      <strong>Selected SKUs</strong>
+          <div class="cart-actions">
+      <a href="index.html" class="btn">← Continue Browsing</a>
+      <button id="clearCart" class="btn danger">Clear All</button>
+    </div>
     </header>
+      <strong>Selected SKUs</strong>
 
     <table id="cart-table">
       <thead>
@@ -73,289 +66,16 @@
     </div>
 
     <div class="row-gap" style="justify-content:flex-end; margin-top:8px;">
-      <button class="btn primary full-width-mobile" id="checkoutBtn">Export</button>
+<div class="sticky-actions">
+  <button class="btn primary full-width-mobile" id="checkoutBtn">Export</button>
+</div>
     </div>
   </section>
 
   <!-- Toast -->
   <div id="toast" role="status" aria-live="polite">Done</div>
 
-  <script>
-    // Keep keys identical to your main app
-    const STORAGE_KEY = "vanir_cart_v1";
-    const DEFAULT_PRODUCT_MARGIN_PCT = 30; // fallback only
+  <script src="cart.js"></script>
 
-    // ---- Utils ----
-    function formatMoney(n){
-      const x = Number(n ?? 0);
-      if (!Number.isFinite(x)) return "$0.00";
-      return x.toLocaleString(undefined, { style:"currency", currency:"USD", minimumFractionDigits:2, maximumFractionDigits:2 });
-    }
-    function escapeHtml(s){
-      return String(s ?? "")
-        .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
-        .replaceAll('"','&quot;').replaceAll("'","&#039;");
-    }
-    function showToast(message="Done"){
-      const el = document.getElementById("toast"); if (!el) return;
-      el.textContent = message;
-      el.style.visibility = "visible";
-      el.style.opacity = "1";
-      el.classList.add("show");
-      setTimeout(() => { el.style.opacity = "0"; el.classList.remove("show"); el.style.visibility = "hidden"; }, 1800);
-    }
-
-    // ---- State: load from localStorage written by index page ----
-    let STATE = {
-      cart: [],           // [{ key, qty, unitBase, marginPct, row: {...} }]
-      labor: [],          // [{ id, rate, qty, name, marginPct }]
-      laborIdSeq: 1,      // number
-    };
-
-    function loadState(){
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const obj = JSON.parse(raw);
-          STATE.cart = Array.isArray(obj.cart) ? obj.cart : [];
-          STATE.labor = Array.isArray(obj.labor) ? obj.labor : [];
-          STATE.laborIdSeq = typeof obj.laborIdSeq === "number" ? obj.laborIdSeq : 1;
-        }
-      } catch (e) { /* noop */ }
-    }
-    function persistState(){
-      // Preserve unknown fields (like activeCategory) if present
-      let existing = {};
-      try { existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch {}
-      const next = {
-        ...existing,
-        cart: STATE.cart.map(it => ({
-          key: it.key,
-          qty: Math.max(0, Math.floor(Number(it.qty) || 0)),
-          unitBase: Number(it.unitBase) || 0,
-          marginPct: Math.max(0, Number(it.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0),
-          row: {
-            vendor: it.row?.vendor ?? "",
-            sku: it.row?.sku ?? "",
-            uom: it.row?.uom ?? "",
-            description: it.row?.description ?? "",
-            price: it.row?.price,
-            priceExtended: it.row?.priceExtended,
-            category: it.row?.category ?? "Misc",
-          }
-        })),
-        labor: STATE.labor.map(l => ({
-          id: l.id,
-          rate: Number(l.rate) || 0,
-          qty: Math.max(0, Math.floor(Number(l.qty) || 0)),
-          name: l.name || "Labor line",
-          marginPct: Math.max(0, Number(l.marginPct) || 0),
-        })),
-        laborIdSeq: STATE.laborIdSeq,
-      };
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
-    }
-
-    // ---- Calculations ----
-    function itemUnitSell(item){
-      const pct = Math.max(0, Number(item?.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0);
-      return (Number(item.unitBase) || 0) * (1 + pct / 100);
-    }
-    function calcProductsTotal(){
-      let total = 0;
-      for (const it of STATE.cart) total += itemUnitSell(it) * Math.max(0, Math.floor(Number(it.qty) || 0));
-      return total;
-    }
-    function calcLaborTotal(){
-      let total = 0;
-      for (const l of STATE.labor) {
-        const qty = Math.max(0, Math.floor(Number(l.qty) || 0));
-        const rate = Math.max(0, Number(l.rate) || 0);
-        const pct = Math.max(0, Number(l.marginPct) || 0);
-        total += qty * rate * (1 + pct / 100);
-      }
-      return total;
-    }
-
-    // ---- Rendering ----
-    function renderCart(){
-      const tbody = document.querySelector("#cart-table tbody");
-      tbody.innerHTML = "";
-
-      for (const it of STATE.cart) {
-        const key = it.key || `${it?.row?.sku}|${it?.row?.vendor}`;
-        const unit = itemUnitSell(it);
-        const line = unit * Math.max(0, Math.floor(Number(it.qty) || 0));
-
-        const tr = document.createElement("tr");
-        tr.setAttribute("data-key", key);
-        tr.innerHTML = `
-          <td data-label="Vendor"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.vendor)}</span></td>
-          <td data-label="SKU"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.sku)}</span></td>
-          <td data-label="Description"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.description)}</span></td>
-          <td data-label="Qty">
-            <div class="stack">
-              <label class="field-label" for="cart-qty-${escapeHtml(key)}">QTY</label>
-              <input id="cart-qty-${escapeHtml(key)}" type="number" class="qty-input cart-qty" min="0" step="1" value="${Math.max(0, Math.floor(Number(it.qty) || 0))}" data-key="${escapeHtml(key)}" aria-label="Cart quantity">
-              <div class="margin-override">
-                <label class="field-label" for="cart-margin-${escapeHtml(key)}">Margin (%)</label>
-                <input id="cart-margin-${escapeHtml(key)}" type="number" class="cart-margin-pct" min="0" step="1" value="${Math.max(0, Number(it.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0)}" data-key="${escapeHtml(key)}" aria-label="Cart margin percent">
-              </div>
-            </div>
-          </td>
-          <td data-label="Unit" data-cell="unit"><span class="cell-text nowrap-ellipsize">${formatMoney(unit)}</span></td>
-          <td data-label="Line Total" data-cell="line"><span class="cell-text nowrap-ellipsize">${formatMoney(line)}</span></td>
-            <td data-label="Actions"><button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button></td>
-        `;
-        tbody.appendChild(tr);
-      }
-
-      // Row handlers
-      tbody.oninput = (ev) => {
-        const qtyEl = ev.target.closest(".cart-qty");
-        if (qtyEl) {
-          const key = qtyEl.getAttribute("data-key");
-          const qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
-          const it = STATE.cart.find(x => (x.key || `${x?.row?.sku}|${x?.row?.vendor}`) === key);
-          if (!it) return;
-          it.qty = qty;
-          updateTotalsCellsForRow(qtyEl.closest("tr"), it);
-          updateTotals();
-          persistState();
-          return;
-        }
-        const pctEl = ev.target.closest(".cart-margin-pct");
-        if (pctEl) {
-          const key = pctEl.getAttribute("data-key");
-          let pct = Number(pctEl.value);
-          if (!Number.isFinite(pct)) pct = DEFAULT_PRODUCT_MARGIN_PCT;
-          pct = Math.max(0, pct);
-          const it = STATE.cart.find(x => (x.key || `${x?.row?.sku}|${x?.row?.vendor}`) === key);
-          if (!it) return;
-          it.marginPct = pct;
-          updateTotalsCellsForRow(pctEl.closest("tr"), it);
-          updateTotals();
-          persistState();
-          return;
-        }
-      };
-      tbody.onclick = (ev) => {
-        const btn = ev.target.closest(".remove-item");
-        if (!btn) return;
-        const key = btn.getAttribute("data-key");
-        STATE.cart = STATE.cart.filter(x => (x.key || `${x?.row?.sku}|${x?.row?.vendor}`) !== key);
-        renderCart();
-        updateTotals();
-        persistState();
-      };
-
-      renderLabor();
-      updateTotals();
-    }
-
-    function updateTotalsCellsForRow(tr, it){
-      const unitCell = tr?.querySelector('[data-cell="unit"] .cell-text');
-      const lineCell = tr?.querySelector('[data-cell="line"] .cell-text');
-      const unit = itemUnitSell(it);
-      if (unitCell) unitCell.textContent = formatMoney(unit);
-      const qty = Math.max(0, Math.floor(Number(it.qty) || 0));
-      if (lineCell) lineCell.textContent = formatMoney(unit * qty);
-    }
-
-    function renderLabor(){
-      const wrap = document.getElementById("labor-list");
-      wrap.querySelectorAll(".labor-row").forEach(el => el.remove());
-
-      for (const l of STATE.labor) {
-        const safeQty = Math.max(0, Math.floor(Number(l.qty) || 0));
-        const safeRate = Number(l.rate) || 0;
-        const safePct = Math.max(0, Number(l.marginPct) || 0);
-
-        const row = document.createElement("div");
-        row.className = "labor-row";
-        row.innerHTML = `
-          <div class="field">
-            <label class="field-label" for="labor-name-${l.id}">Labor name</label>
-            <input id="labor-name-${l.id}" type="text" class="labor-name" data-id="${l.id}" value="${escapeHtml(l.name || "Labor line")}" placeholder="Labor line" aria-label="Labor name">
-          </div>
-          <div class="field">
-            <label class="field-label" for="labor-qty-${l.id}">QTY</label>
-            <input id="labor-qty-${l.id}" type="number" class="labor-qty" data-id="${l.id}" min="0" step="1" value="${safeQty}" placeholder="Qty" aria-label="Labor quantity">
-          </div>
-          <div class="field">
-            <label class="field-label" for="labor-rate-${l.id}">Labor cost ($)</label>
-            <input id="labor-rate-${l.id}" type="number" class="labor-rate" data-id="${l.id}" min="0" step="0.01" value="${safeRate}" placeholder="$/unit" aria-label="Labor cost per unit">
-          </div>
-          <div class="field">
-            <label class="field-label" for="labor-margin-${l.id}">Margin (%)</label>
-            <input id="labor-margin-${l.id}" type="number" class="labor-margin-pct" data-id="${l.id}" min="0" step="1" value="${safePct}" placeholder="e.g., 30" aria-label="Labor margin percent">
-          </div>
-          <div class="field">
-            <label class="field-label">&nbsp;</label>
-            <button class="btn danger remove-labor" data-id="${l.id}">Remove</button>
-          </div>
-        `;
-        wrap.appendChild(row);
-      }
-
-      wrap.oninput = (ev) => {
-        const id = Number(ev.target.getAttribute("data-id"));
-        const l = STATE.labor.find(x => x.id === id);
-        if (!l) return;
-
-        if (ev.target.classList.contains("labor-qty")) {
-          l.qty = Math.max(0, Math.floor(Number(ev.target.value) || 0));
-        } else if (ev.target.classList.contains("labor-rate")) {
-          l.rate = Math.max(0, Number(ev.target.value) || 0);
-        } else if (ev.target.classList.contains("labor-margin-pct")) {
-          let val = Number(ev.target.value);
-          if (!Number.isFinite(val)) val = 0;
-          l.marginPct = Math.max(0, val);
-        } else if (ev.target.classList.contains("labor-name")) {
-          l.name = ev.target.value;
-        }
-        updateTotals();
-        persistState();
-      };
-      wrap.onclick = (ev) => {
-        const btn = ev.target.closest(".remove-labor");
-        if (!btn) return;
-        const id = Number(btn.getAttribute("data-id"));
-        STATE.labor = STATE.labor.filter(x => x.id !== id);
-        renderLabor();
-        updateTotals();
-        persistState();
-      };
-    }
-
-    function updateTotals(){
-      document.getElementById("productTotal").textContent = formatMoney(calcProductsTotal());
-      document.getElementById("laborTotal").textContent   = formatMoney(calcLaborTotal());
-      document.getElementById("grandTotal").textContent   = formatMoney(calcProductsTotal() + calcLaborTotal());
-    }
-
-    // ---- Controls ----
-    document.getElementById("clearCart").addEventListener("click", () => {
-      STATE.cart = [];
-      renderCart();
-      updateTotals();
-      persistState();
-      showToast("Cart cleared.");
-    });
-    document.getElementById("addLabor").addEventListener("click", () => {
-      const nextId = (STATE.laborIdSeq = (Number(STATE.laborIdSeq) || 1) + 1);
-      STATE.labor.push({ id: nextId, rate: 0, qty: 1, name: "Labor line", marginPct: 0 });
-      renderLabor();
-      updateTotals();
-      persistState();
-    });
-    document.getElementById("checkoutBtn").addEventListener("click", () => {
-      showToast("This is a placeholder. Integrate your checkout/email/export next.");
-    });
-
-    // ---- Init ----
-    loadState();
-    renderCart();
-  </script>
 </body>
 </html>

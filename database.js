@@ -1,3 +1,17 @@
+
+// === DEBUG LOGGING ===
+const DEBUG_LOGS = true;  // set to false to silence
+function dbg(...args){ try { if (DEBUG_LOGS) console.log(...args); } catch(_){} }
+function dgw(label, obj){ try { if (DEBUG_LOGS) console.groupCollapsed(label); console.log(obj); console.groupEnd(); } catch(_){} }
+// ======================
+
+// --- Virtualization / paging config (mobile-first) ---
+const VIRTUAL_PAGE_SIZE = 250;   // ~250 rows per window feels snappy on iPhone
+const VIRTUAL_PREFETCH = 1;      // prefetch next page proactively
+let _pageCursor = 0;             // 0-based page index
+let _pageTitle = null;           // resolved sheet title
+let _isLoadingPage = false;
+let _noMorePages = false;
 // ===== GOOGLE SHEETS + GIS SIGN-IN (popup token flow) =====
 
 // --- Config ---
@@ -158,6 +172,25 @@ const CATEGORY_RULES = [
 
   { name: "Misc", includes: [] }
 ];
+// Called by <script src="https://accounts.google.com/gsi/client" onload="gisLoaded()">
+function gisLoaded() {
+  try {
+    gisInited = true; // just a boolean you already track
+    // Create a token client only if you actually want login enabled
+    if (!NO_LOGIN_MODE && window.google?.accounts?.oauth2) {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: (tokenResponse) => setAndPersistToken(tokenResponse),
+      });
+    }
+  } catch (e) {
+    console.warn("GIS init skipped or failed:", e);
+  } finally {
+    // Wire any buttons that depend on GIS being present
+    maybeEnableButtons && maybeEnableButtons();
+  }
+}
 
 function categorizeDescription(desc = "") {
   const d = String(desc || "");
@@ -544,6 +577,9 @@ function renderCategoryChips() {
   };
 }
 function applyFilters() {
+const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS)) ? FILTERED_ROWS.length : 0;
+  dbg("[applyFilters] before:", beforeCount, "ALL_ROWS:", (Array.isArray(ALL_ROWS)? ALL_ROWS.length : 0));
+
   const q    = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
   const vSel = (document.getElementById("vendorFilter")?.value || "");
   const cSel = ACTIVE_CATEGORY || (document.getElementById("categoryFilter")?.value || "");
@@ -963,19 +999,29 @@ function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = se
 
 // ====================== Main Flow ========================
 async function listSheetData() {
-  const { rows } = await fetchProductSheet(SHEET_ID, DEFAULT_GID);
-  ALL_ROWS = rows;
-  buildCategories(ALL_ROWS);
-  populateVendorFilter(ALL_ROWS);
-  populateCategoryFilter(ALL_ROWS);
-  applyRestoreAfterDataLoad();
-  setDisabled("searchInput", false);
-  setDisabled("vendorFilter", false);
-  setDisabled("categoryFilter", false);
-  setDisabled("clearFilters", false);
-  wireControlsOnce();
-  renderCategoryChips();
-  applyFilters();
+dbg("[listSheetData] starting lazy load. Resetting state.");
+
+  ALL_ROWS = [];
+  FILTERED_ROWS = [];
+  _pageCursor = 0; _noMorePages = false;
+
+  showEl && showEl('table-container', true);
+  showSkeletonRows(8);
+
+  await loadNextPage(); // first window
+  removeSkeletonRows();
+
+  // prefetch next
+  setTimeout(() => { loadNextPage().catch(()=>{}); }, 0);
+
+  setDisabled && setDisabled('searchInput', false);
+  setDisabled && setDisabled('vendorFilter', false);
+  setDisabled && setDisabled('categoryFilter', false);
+  setDisabled && setDisabled('clearFilters', false);
+
+  if (typeof wireControlsOnce === 'function') wireControlsOnce();
+  if (typeof applyRestoreAfterDataLoad === 'function') applyRestoreAfterDataLoad();
+  setupInfiniteScroll();
 }
 
 // ====================== Controls Wiring ===================
@@ -1060,3 +1106,228 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+
+
+
+async function resolveSheetTitle(spreadsheetId, gidNumber) {
+  if (_pageTitle) return _pageTitle;
+  if (typeof getSheetTitleByGid === 'function') {
+    _pageTitle = await getSheetTitleByGid(spreadsheetId, gidNumber);
+  }
+  if (!_pageTitle) {
+    _pageTitle = typeof PRODUCT_TAB_FALLBACK !== 'undefined' ? PRODUCT_TAB_FALLBACK : 'Sheet1';
+  }
+  return _pageTitle;
+}
+
+async function fetchRowsWindow(spreadsheetId, gidNumber, pageIdx, pageSize) {
+dbg("[fetchRowsWindow] pageIdx:", pageIdx, "pageSize:", pageSize);
+
+  const title = await resolveSheetTitle(spreadsheetId, gidNumber);
+  const headerRes = await gapi.client.sheets.spreadsheets.values.get({
+    spreadsheetId, range: `'${title}'!A1:H1`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const header = headerRes.result.values?.[0] || [];
+  dbg('[fetchRowsWindow] header:', header);
+
+
+  const startRow = (pageIdx * pageSize) + 2;
+  const endRow   = startRow + pageSize - 1;
+  const range    = `'${title}'!A${startRow}:H${endRow}`;
+
+  const res = await gapi.client.sheets.spreadsheets.values.get({
+    spreadsheetId, range, valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const dataRows = res.result.values || [];
+  dbg('[fetchRowsWindow] fetched rows:', dataRows.length);
+
+  return { header, dataRows, title };
+}
+
+function transformWindowRows(header, dataRows) {
+dbg("[transformWindowRows] header length:", (header||[]).length, "dataRows:", (dataRows||[]).length);
+
+  const colMap = {};
+  (header || []).forEach((h, idx) => {
+    if (typeof headerKey === 'function') {
+      const key = headerKey(h);
+      if (key && !(key in colMap)) colMap[key] = idx;
+    } else {
+      const key = (''+h).trim().toLowerCase().replace(/\s+/g, '');
+      if (key && !(key in colMap)) colMap[key] = idx;
+    }
+  });
+
+  const rows = [];
+  for (const row of dataRows) {
+    const vendor  = colMap.vendor        != null ? row[colMap.vendor]        : '';
+    const sku     = colMap.sku           != null ? row[colMap.sku]           : '';
+    const uom     = colMap.uom           != null ? row[colMap.uom]           : '';
+    const desc    = colMap.description   != null ? row[colMap.description]   : '';
+    const helper  = colMap.skuHelper     != null ? row[colMap.skuHelper]     : '';
+    const multVal = colMap.uomMultiple   != null ? row[colMap.uomMultiple]   : null;
+    const costVal = colMap.cost          != null ? row[colMap.cost]          : null;
+    const pxVal   = colMap.priceExtended != null ? row[colMap.priceExtended] : null;
+
+    const pn = (typeof parseNumber === 'function') ? parseNumber : (v => (v==null||v==='')?null:Number(v));
+    const nm = (typeof norm === 'function') ? norm : (v => (v==null)?'':String(v).trim());
+
+    let mult = multVal===''?null:pn(multVal);
+    let cost = costVal===''?null:pn(costVal);
+    let px   = pxVal===''?null:pn(pxVal);
+
+    const cleanSku = nm(sku);
+    if (!cleanSku) continue;
+
+    if (px == null) {
+      const m = (mult == null ? 1 : mult);
+      const c = (cost == null ? 0 : cost);
+      px = m * c;
+    }
+    const description = nm(desc);
+    const cat = (typeof categorizeDescription === 'function') ? categorizeDescription(description) : '';
+
+    const makeHelper = (typeof makeSkuHelper === 'function') ? makeSkuHelper : ((s, v) => s && v ? (s + ' • ' + v) : (s || v || ''));
+    rows.push({
+      vendor: nm(vendor) || 'N/A',
+      sku: cleanSku,
+      uom: nm(uom),
+      description,
+      skuHelper: nm(helper) || makeHelper(sku, vendor),
+      uomMultiple: mult,
+      cost: cost,
+      priceExtended: px,
+      category: cat,
+    });
+  }
+  dbg('[transformWindowRows] produced rows:', rows.length);
+  return rows;
+}
+
+function renderTableAppend(rows) {
+dbg("[renderTableAppend] appending rows:", rows ? rows.length : 0);
+
+  const table = document.getElementById('data-table') || ensureTable();
+  const thead = table.querySelector('thead');
+  const tbody = table.querySelector('tbody');
+
+  if (!thead.innerHTML) {
+    thead.innerHTML = `
+      <tr>
+        <th>Vendor</th><th>SKU</th><th>UOM</th><th>Description</th>
+        <th style="width:160px;">Qty</th><th style="width:120px;"></th>
+      </tr>`;
+  }
+
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const key = `${r.sku}|${r.vendor}`;
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-key', key);
+    tr.innerHTML = `
+      <td data-label="Vendor">${escapeHtml(r.vendor)}</td>
+      <td data-label="SKU">${escapeHtml(r.sku)}</td>
+      <td data-label="UOM">${escapeHtml(r.uom || '')}</td>
+      <td data-label="Description">${escapeHtml(r.description || '')}</td>
+      <td data-label="Qty"><input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="1"></td>
+      <td data-label="" class="row-actions">
+        <button class="btn add-to-cart">Add</button>
+      </td>`;
+    frag.appendChild(tr);
+  }
+  tbody.appendChild(frag);
+
+  if (!tbody._bound) {
+    tbody._bound = true;
+    tbody.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.add-to-cart');
+      if (!btn) return;
+      const tr = btn.closest('tr');
+      const key = tr.getAttribute('data-key');
+      const qtyInput = tr.querySelector('input[type="number"]');
+      const qty = Math.max(1, Math.floor(Number(qtyInput && qtyInput.value) || 1));
+      const item = (Array.isArray(ALL_ROWS) ? ALL_ROWS : []).find(r => `${r.sku}|${r.vendor}` === key);
+      if (item && typeof addToCart === 'function') addToCart(item, qty);
+    });
+  }
+}
+
+function showSkeletonRows(n=6){
+  const table = document.getElementById('data-table') || ensureTable();
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+  for (let i=0;i<n;i++){
+    const tr = document.createElement('tr');
+    tr.className = 'row-skeleton';
+    tr.innerHTML = `<td colspan="6">
+      <div class="sk-line"></div>
+      <div class="sk-line"></div>
+      <div class="sk-line short"></div>
+    </td>`;
+    tbody.appendChild(tr);
+  }
+}
+function removeSkeletonRows(){
+  document.querySelectorAll('.row-skeleton').forEach(el=>el.remove());
+}
+
+async function loadNextPage() {
+dbg("[loadNextPage] page:", _pageCursor, "loading:", _isLoadingPage, "noMore:", _noMorePages);
+
+  if (_isLoadingPage || _noMorePages) return;
+  _isLoadingPage = true;
+  if (typeof showEl === 'function') showEl('loadingBarOverlay', true);
+
+  try {
+    const { header, dataRows } = await fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor, VIRTUAL_PAGE_SIZE);
+    const windowRows = transformWindowRows(header, dataRows);
+    dbg('[loadNextPage] windowRows length:', windowRows ? windowRows.length : 0);
+    if (!windowRows.length) {
+      _noMorePages = true;
+    } else {
+      if (!Array.isArray(windowRows)) return;
+      if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
+      ALL_ROWS.push(...windowRows);
+      dbg('[loadNextPage] ALL_ROWS after push:', ALL_ROWS.length);
+
+      if (_pageCursor === 0) {
+        if (typeof buildCategories === 'function') buildCategories(ALL_ROWS);
+        if (typeof populateVendorFilter === 'function') populateVendorFilter(ALL_ROWS);
+        if (typeof populateCategoryFilter === 'function') populateCategoryFilter(ALL_ROWS);
+        if (typeof renderCategoryChips === 'function') renderCategoryChips();
+
+        try { if (typeof applyFilters === 'function') applyFilters(); } catch(e){ console.error('[loadNextPage] applyFilters error', e); }
+        const current = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.slice() : [];
+        const tbody = (document.getElementById('data-table') || ensureTable()).querySelector('tbody');
+        if (tbody) tbody.innerHTML = '';
+        renderTableAppend(current);
+      } else {
+        const before = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
+        try { if (typeof applyFilters === 'function') applyFilters(); } catch(e){ console.error('[loadNextPage] applyFilters error', e); }
+        const after = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
+        const delta = (after > before && Array.isArray(FILTERED_ROWS)) ? FILTERED_ROWS.slice(before) : [];
+        renderTableAppend(delta);
+      }
+      _pageCursor++;
+    }
+  } finally {
+    if (typeof showEl === 'function') showEl('loadingBarOverlay', false);
+    _isLoadingPage = false;
+  }
+}
+
+function setupInfiniteScroll() {
+  const container = document.getElementById('table-container') || document.body;
+  if (document.getElementById('infinite-sentry')) return;
+  const sentry = document.createElement('div');
+  sentry.id = 'infinite-sentry';
+  container.appendChild(sentry);
+
+  const io = new IntersectionObserver(async (entries) => {
+    if (!entries[0].isIntersecting || _isLoadingPage || _noMorePages) return;
+    await loadNextPage();
+  }, { rootMargin: '1200px 0px 1200px 0px' });
+  io.observe(sentry);
+}
