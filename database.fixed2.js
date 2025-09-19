@@ -27,7 +27,7 @@ let accessToken = null;
 
 let _controlsWired = false;
 // --- Virtualization / paging config (mobile-first) ---
-const VIRTUAL_PAGE_SIZE = 250;   // ~250 rows per window feels snappy on iPhone
+const VIRTUAL_PAGE_SIZE = 600;   // ~250 rows per window feels snappy on iPhone
 const VIRTUAL_PREFETCH = 1;      // prefetch next page proactively
 let _pageCursor = 0;             // 0-based page index
 let _pageTitle = null;           // resolved sheet title
@@ -64,7 +64,6 @@ const MARKUP_MULT = 1 + MARGIN;
 
 // Data state
 let ALL_ROWS = [];
-let FILTERED_ROWS = [];
 // key: sku|vendor -> {row, qty, unitBase, marginPct}
 const CART = new Map();
 // {id, name, rate, qty, marginPct}  // percentage (e.g., 30 => +30%)
@@ -99,39 +98,8 @@ if (cartFab) {
   };
 }
 FILTERED_ROWS = [];
-_pageCursor = 0; _noMorePages = false;
 
 
-showEl && showEl('table-container', true);
-showSkeletonRows(8);
-
-
-// 2) Load first window fresh
-loadNextPage();
-removeSkeletonRows();
-
-
-// 3) Prefetch next window quickly
-setTimeout(() => { loadNextPage().catch(()=>{}); }, 0);
-
-
-// 4) Enable controls
-setDisabled && setDisabled('searchInput', false);
-setDisabled && setDisabled('vendorFilter', false);
-setDisabled && setDisabled('categoryFilter', false);
-setDisabled && setDisabled('clearFilters', false);
-
-
-if (typeof wireControlsOnce === 'function') wireControlsOnce();
-if (typeof applyRestoreAfterDataLoad === 'function') applyRestoreAfterDataLoad();
-setupInfiniteScroll && setupInfiniteScroll();
-
-
-// 5) Background preload of remaining pages (no user interaction required)
-if (typeof preloadAllPages === 'function' && AUTO_PRELOAD_ALL) { preloadAllPages().catch(() => {}); }
-
-
-updateDataStatus && updateDataStatus('fresh', 'Up to date • ' + new Date().toLocaleTimeString());
 
 // Legacy shim: we now bind table clicks inside renderTable()
 function bindTableHandlers(){ /* no-op (handled in renderTable) */ }
