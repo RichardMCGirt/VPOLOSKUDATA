@@ -1009,31 +1009,156 @@ const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}|${r.uom || ''}`, 
 // Debounce
 function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
 
+
+// ======= Data cache & status (stale-while-revalidate) =======
+const PRODUCT_CACHE_KEY = "vanir_products_cache_v2";
+
+/** Compact fingerprint based on first N rows' key fields. */
+function fingerprintRows(rows, limit = 400){
+  try {
+    const slice = (Array.isArray(rows) ? rows : []).slice(0, limit).map(r =>
+      `${r?.vendor||""}|${r?.sku||""}|${r?.uom||""}|${r?.description||""}|${r?.price||""}`
+    ).join("\n");
+    let h = 5381;
+    for (let i=0;i<slice.length;i++){ h = ((h << 5) + h) ^ slice.charCodeAt(i); }
+    // include count so different lengths produce different prints quickly
+    return (h >>> 0).toString(36) + ":" + Math.min(limit, (rows||[]).length);
+  } catch(e){ return "0"; }
+}
+
+function loadProductCache(){
+  try {
+    const raw = localStorage.getItem(PRODUCT_CACHE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!Array.isArray(obj.rows)) return null;
+    return obj;
+  } catch(e){ return null; }
+}
+
+const _saveProductCacheDebounced = debounce(() => {
+  try {
+    const rows = Array.isArray(ALL_ROWS) ? ALL_ROWS : [];
+    const payload = { rows, fp: fingerprintRows(rows), savedAt: Date.now() };
+    localStorage.setItem(PRODUCT_CACHE_KEY, JSON.stringify(payload));
+  } catch(e){ /* ignore */ }
+}, 350);
+
+/** Update the inline status pill (if present). */
+function updateDataStatus(state = "idle", message = ""){
+  const el = document.getElementById("dataStatus");
+  if (!el) return;
+  el.setAttribute("data-state", state);
+  el.textContent = message || (
+    state === "loading" ? "Loading…"
+    : state === "fresh" ? "Up to date"
+    : state === "stale" ? "Showing cached data…"
+    : state === "error" ? "Error"
+    : "Ready"
+  );
+}
+
+// Wire refresh button
+(function bindRefreshOnce(){
+  const btn = document.getElementById("refreshData");
+  if (!btn || btn._bound) return;
+  btn._bound = true;
+  btn.addEventListener("click", async () => {
+    try {
+      localStorage.removeItem(PRODUCT_CACHE_KEY);
+      updateDataStatus("loading", "Refreshing…");
+      // Reset and reload first window
+      ALL_ROWS = []; FILTERED_ROWS = []; _pageCursor = 0; _noMorePages = false;
+      showSkeletonRows(8);
+      await loadNextPage();
+      removeSkeletonRows();
+      updateDataStatus("fresh", "Up to date • " + new Date().toLocaleTimeString());
+      showToast && showToast("Data refreshed.");
+    } catch (e){
+      console.error("[refreshData] failed", e);
+      updateDataStatus("error", "Refresh failed");
+    }
+  }, { passive: true });
+})()
+
+// ======= Background preloading (no user interaction required) =======
+const AUTO_PRELOAD_ALL = true;                 // set false to revert to infinite-scroll only
+const MAX_BACKGROUND_PAGES = Infinity;         // limit how many windows to fetch in background
+const BACKGROUND_PAGE_DELAY_MS = 0;            // small yield between pages to keep UI responsive
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function preloadAllPages() {
+  try {
+    let pagesFetched = 0;
+    updateDataStatus && updateDataStatus('loading', 'Preloading…');
+    while (!_noMorePages && pagesFetched < MAX_BACKGROUND_PAGES) {
+      await loadNextPage();
+      pagesFetched++;
+      if (BACKGROUND_PAGE_DELAY_MS) await sleep(BACKGROUND_PAGE_DELAY_MS);
+    }
+    updateDataStatus && updateDataStatus('fresh', 'Up to date • ' + new Date().toLocaleTimeString());
+  } catch (e) {
+    console.error('[preloadAllPages] failed', e);
+    updateDataStatus && updateDataStatus('error', 'Preload failed');
+  }
+}
+;
+
 // ====================== Main Flow ========================
 async function listSheetData() {
 dbg("[listSheetData] starting lazy load. Resetting state.");
 
-  ALL_ROWS = [];
-  FILTERED_ROWS = [];
-  _pageCursor = 0; _noMorePages = false;
+// 0) Try to show cached rows immediately (if present), then revalidate in background.
+(function showCachedFirst(){
+  const cache = loadProductCache && loadProductCache();
+  if (cache && Array.isArray(cache.rows) && cache.rows.length){
+    try {
+      // Render from cache without blocking network load
+      ALL_ROWS = cache.rows.slice();
+      if (typeof buildCategories === 'function') buildCategories(ALL_ROWS);
+      if (typeof populateVendorFilter === 'function') populateVendorFilter(ALL_ROWS);
+      if (typeof populateCategoryFilter === 'function') populateCategoryFilter(ALL_ROWS);
+      if (typeof renderCategoryChips === 'function') renderCategoryChips();
+      if (typeof applyFilters === 'function') applyFilters();
+      const current = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.slice() : [];
+      const tbody = (document.getElementById('data-table') || ensureTable()).querySelector('tbody');
+      if (tbody) tbody.innerHTML = '';
+      renderTableAppend && renderTableAppend(current);
+      updateDataStatus && updateDataStatus('stale', `Cached • ${new Date(cache.savedAt||Date.now()).toLocaleTimeString()} — checking for updates…`);
+    } catch(e){ console.warn("[cache render] failed", e); }
+  } else {
+    updateDataStatus && updateDataStatus('loading', 'Loading…');
+  }
+})();
 
-  showEl && showEl('table-container', true);
-  showSkeletonRows(8);
+// 1) Reset, show container & skeleton
+ALL_ROWS = [];
+FILTERED_ROWS = [];
+_pageCursor = 0; _noMorePages = false;
 
-  await loadNextPage(); // first window
-  removeSkeletonRows();
+showEl && showEl('table-container', true);
+showSkeletonRows(8);
 
-  // prefetch next
-  setTimeout(() => { loadNextPage().catch(()=>{}); }, 0);
+// 2) Load first window
+await loadNextPage();
+removeSkeletonRows();
 
-  setDisabled && setDisabled('searchInput', false);
-  setDisabled && setDisabled('vendorFilter', false);
-  setDisabled && setDisabled('categoryFilter', false);
-  setDisabled && setDisabled('clearFilters', false);
+// 3) Prefetch next window
+setTimeout(() => { loadNextPage().catch(()=>{}); }, 0);
 
-  if (typeof wireControlsOnce === 'function') wireControlsOnce();
-  if (typeof applyRestoreAfterDataLoad === 'function') applyRestoreAfterDataLoad();
-  setupInfiniteScroll();
+// 4) Enable controls
+setDisabled && setDisabled('searchInput', false);
+setDisabled && setDisabled('vendorFilter', false);
+setDisabled && setDisabled('categoryFilter', false);
+setDisabled && setDisabled('clearFilters', false);
+
+if (typeof wireControlsOnce === 'function') wireControlsOnce();
+if (typeof applyRestoreAfterDataLoad === 'function') applyRestoreAfterDataLoad();
+setupInfiniteScroll();
+  if (typeof preloadAllPages === 'function' && AUTO_PRELOAD_ALL) { preloadAllPages().catch(() => {}); }
+  updateDataStatus && updateDataStatus('fresh', 'Up to date • ' + new Date().toLocaleTimeString());
+
 }
 
 // ====================== Controls Wiring ===================
@@ -1324,6 +1449,7 @@ dbg("[loadNextPage] page:", _pageCursor, "loading:", _isLoadingPage, "noMore:", 
       if (!Array.isArray(windowRows)) return;
       if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
       ALL_ROWS.push(...windowRows);
+      _saveProductCacheDebounced && _saveProductCacheDebounced();   // ← save to localStorage
       dbg('[loadNextPage] ALL_ROWS after push:', ALL_ROWS.length);
 
       if (_pageCursor === 0) {
@@ -1337,6 +1463,7 @@ dbg("[loadNextPage] page:", _pageCursor, "loading:", _isLoadingPage, "noMore:", 
         const tbody = (document.getElementById('data-table') || ensureTable()).querySelector('tbody');
         if (tbody) tbody.innerHTML = '';
         renderTableAppend(current);
+        updateDataStatus && updateDataStatus('fresh', 'Up to date • ' + new Date().toLocaleTimeString()); // ← UI cue
       } else {
         const before = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
         try { if (typeof applyFilters === 'function') applyFilters(); } catch(e){ console.error('[loadNextPage] applyFilters error', e); }

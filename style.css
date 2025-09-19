@@ -450,3 +450,17 @@ tbody tr:last-child td { border-bottom: none; }
   margin: 8px 0;
 }
 .sk-line.short{ width: 40%; }
+
+
+/* ===== Data status pill ===== */
+.status-row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin: 8px 0 10px; }
+.status-pill{
+  display:inline-flex; align-items:center; gap:6px;
+  padding:6px 10px; border-radius:999px; border:1px solid var(--border);
+  background: var(--thead); color:#111827; font-size:.9rem;
+}
+.status-pill[data-state="loading"]{ background:#fff7ed; border-color:#fed7aa; }   /* warm amber */
+.status-pill[data-state="stale"]  { background:#eef2ff; border-color:#c7d2fe; }   /* indigo hint */
+.status-pill[data-state="fresh"]  { background:#ecfdf5; border-color:#a7f3d0; }   /* green hint */
+.status-pill[data-state="error"]  { background:#fef2f2; border-color:#fecaca; }   /* red hint */
+

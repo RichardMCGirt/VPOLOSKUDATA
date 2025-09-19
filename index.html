@@ -33,7 +33,15 @@
       <option value="">All categories</option>
     </select>
     <button id="clearFilters" class="btn" disabled>Clear</button>
-  </div>
+  
+
+<!-- Data load status + refresh -->
+    <div class="status-row" id="dataStatusRow" aria-live="polite" aria-atomic="true">
+      <span id="dataStatus" class="status-pill" data-state="idle">Not loaded</span>
+      <button id="refreshData" class="btn" type="button">Refresh</button>
+    </div>
+
+</div>
 
   <!-- Category chips (mobile-friendly quick filter) -->
   <div id="categoryChips" class="chips scroller hidden" aria-label="Quick category filters"></div>
