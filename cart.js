@@ -6,6 +6,19 @@
    - Prefills when ?rec=recXXXX is present
    Requires: airtable.service.js
 */
+// Put this near the top-level IIFE or after DOMContentLoaded
+(function(){
+  const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
+  if (bc) {
+    bc.onmessage = (ev) => {
+      if (ev?.data?.type === "focus") {
+        try { window.focus(); } catch {}
+      }
+    };
+  }
+  try { window.name = "vanir_cart_tab"; } catch {}
+})();
+
 (function () {
   "use strict";
 

@@ -68,6 +68,63 @@ let LABOR_LINES = [];
 // Cached categories
 let ALL_CATEGORIES = [];
 let ACTIVE_CATEGORY = "";
+// --- Cart tab reuse (one source of truth) ---
+const CART_URL = "cart.html";
+const CART_WINDOW_NAME = "vanir_cart_tab";
+const cartChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
+
+function openOrFocusCart(e){
+  if (e) e.preventDefault();
+  const w = window.open(CART_URL, CART_WINDOW_NAME); // reuse same named tab
+  try { w && w.focus && w.focus(); } catch {}
+  try { cartChannel?.postMessage({ type: "focus" }); } catch {}
+}
+
+function maybeEnableButtons() {
+  const cartFab = document.getElementById("cartFab");
+  if (cartFab) cartFab.onclick = openOrFocusCart;
+
+  if (authBtn) {
+    authBtn.onclick = () => {
+      try { tokenClient.requestAccessToken({ prompt: "" }); }
+      catch { tokenClient.requestAccessToken({ prompt: "consent" }); }
+    };
+  }
+
+  if (signoutBtn) {
+    signoutBtn.onclick = () => {
+      clearLocalToken();
+      showEl("authorize_button", true);
+      showEl("signout_button", false);
+
+      const tbody = document.querySelector("#data-table tbody");
+      if (tbody) tbody.innerHTML = "";
+      ALL_ROWS = [];
+      FILTERED_ROWS = [];
+      CART.clear();
+      LABOR_LINES = [];
+      renderCart();
+      showToast("Signed out (local).");
+      setDisabled("searchInput", true);
+      setDisabled("vendorFilter", true);
+      setDisabled("categoryFilter", true);
+      setDisabled("clearFilters", true);
+      showEl("categoryChips", false);
+    };
+  }
+
+  if (cartFab) {
+  cartFab.onclick = (e) => {
+    e.preventDefault();
+    window.location.assign("cart.html"); // or: location.href = "cart.html";
+  };
+}
+
+
+  // (Optional) if you also have a link with id="cartLink", reuse the same opener:
+  const cartLink = document.getElementById("cartLink");
+  if (cartLink) cartLink.addEventListener("click", openOrFocusCart);
+}
 
 // ======== Token persistence & silent refresh ========
 const TOKEN_STORAGE_KEY = "vanir_gis_token_v1";
@@ -79,10 +136,7 @@ function qtyFromUI(qtyEl){
   LAST_QTY = q; localStorage.setItem("vanir_last_qty", String(q));
   return q;
 }
-// Near top-level in database.js
-const CART_URL = "cart.html";
-const CART_WINDOW_NAME = "vanir_cart_tab";
-const cartChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
+
 
 // In maybeEnableButtons(), replace the FAB click:
 if (cartFab) {
@@ -296,55 +350,6 @@ function gapiLoaded() {
 }
 
 
-// =============== Buttons/Handlers =========================
-function maybeEnableButtons() {
-  const authBtn    = document.getElementById("authorize_button");
-  const signoutBtn = document.getElementById("signout_button");
-  const cartFab    = document.getElementById("cartFab");
-
-  if (authBtn) {
-    authBtn.onclick = () => {
-      try { tokenClient.requestAccessToken({ prompt: "" }); }
-      catch { tokenClient.requestAccessToken({ prompt: "consent" }); }
-    };
-  }
-
-  if (signoutBtn) {
-    signoutBtn.onclick = () => {
-      clearLocalToken();
-      showEl("authorize_button", true);
-      showEl("signout_button", false);
-
-      const tbody = document.querySelector("#data-table tbody");
-      if (tbody) tbody.innerHTML = "";
-      ALL_ROWS = [];
-      FILTERED_ROWS = [];
-      CART.clear();
-      LABOR_LINES = [];
-      renderCart();
-      updateCartBadge();
-      showToast("Signed out (local).");
-      setDisabled("searchInput", true);
-      setDisabled("vendorFilter", true);
-      setDisabled("categoryFilter", true);
-      setDisabled("clearFilters", true);
-      showEl("categoryChips", false);
-    };
-  }
-
-  if (cartFab) {
-    cartFab.onclick = () => {
-      // Open dedicated cart page in a new tab (Amazon-style)
-      const w = window.open("cart.html", "_blank", "noopener,noreferrer");
-      if (!w) {
-        // Fallback if popups are blocked: reveal cart section in-place
-        showEl("cart-section", true);
-        const target = document.querySelector("#cart-table tbody") || document.getElementById("cart-section");
-        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    };
-  }
-}
 
 
 async function updateAllPricingFromSheet() {
