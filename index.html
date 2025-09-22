@@ -36,7 +36,14 @@
   
 
 <!-- Data load status + refresh -->
-    <div class="row-gap" style="margin:6px 0 10px 0;"><label style="display:inline-flex;align-items:center;gap:8px;font-size:0.9rem;"><input id="gentleMode" type="checkbox" checked /> Gentle mode (prevent 429s)</label></div>
+    <div class="row-gap" style="margin:6px 0 10px 0;"><label style="display:inline-flex;align-items:center;gap:8px;font-size:0.9rem;"><input id="gentleMode" type="checkbox" checked /> Gentle mode (prevent 429s)</label>
+<!-- Fetch Count Badge -->
+<div id="fetch-count-badge" style="display:flex;gap:8px;align-items:center;margin:8px 0 0 0;font-size:0.95rem;">
+  <span style="opacity:0.75;">Fetched</span>
+  <strong id="fetch-count" style="padding:2px 8px;border-radius:999px;border:1px solid #ccc;">0 / 12,709</strong>
+</div>
+
+</div>
 <!-- Hidden-until-filter hint -->
 <p id="bg-hint" style="display:block;margin:10px 0;color:#555;font-style:italic;">
   Type in the search box or choose a filter to show results.
@@ -113,8 +120,11 @@
   </div>
 
   <!-- JS -->
+   <script src="ui-visibility.js"></script>
+
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
 <script src="database.js"></script>
+
 <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()" async defer></script>
 <script src="https://accounts.google.com/gsi/client" onload="gisLoaded()" async defer></script>
 </body>

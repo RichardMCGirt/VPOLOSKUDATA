@@ -1,3 +1,133 @@
+// === Record Count Verification ==============================================
+const EXPECTED_ROW_COUNT = Number(localStorage.getItem('EXPECTED_ROW_COUNT') || 12709);
+
+function setExpectedRowCount(n){
+  try { localStorage.setItem('EXPECTED_ROW_COUNT', String(n)); }
+  catch {}
+}
+
+function verifyRecordCount(){
+  try {
+    const expected = EXPECTED_ROW_COUNT || 0;
+    const actual = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
+    const ok = expected ? (actual === expected) : true;
+    console.log("[verifyRecordCount]", { expected, actual, ok });
+
+    // Update status pill if available
+    if (typeof updateDataStatus === "function"){
+      const msg = expected ? `Loaded ${actual}${ok ? " ✓" : ` / ${expected}`}` : `Loaded ${actual}`;
+      updateDataStatus(ok ? "fresh" : "warn", msg);
+    }
+
+    // Update badge
+    const badge = document.getElementById("fetch-count");
+    if (badge){
+      badge.textContent = expected ? `${actual} / ${expected}` : String(actual);
+      if (ok) { badge.classList.add("ok"); badge.classList.remove("warn"); }
+      else { badge.classList.add("warn"); badge.classList.remove("ok"); }
+    }
+    return { expected, actual, ok };
+  } catch (e){
+    console.warn("[verifyRecordCount] failed", e);
+    return { expected: EXPECTED_ROW_COUNT || 0, actual: 0, ok: false };
+  }
+}
+
+// Expose for console checking
+window.setExpectedRowCount = setExpectedRowCount;
+window.verifyRecordCount = verifyRecordCount;
+
+// ===== 429-aware fetch + rate limit gate (Sheets) ============================
+const RL_MAX_PER_MIN = 30;             // Adjust if your quota allows
+const RL_INTERVAL_MS = 60_000;
+let __rl_timestamps = [];
+
+/** Blocks until a slot is available under the per-minute cap. */
+async function __rateLimitGate(){
+  while (true){
+    const now = Date.now();
+    __rl_timestamps = __rl_timestamps.filter(t => now - t < RL_INTERVAL_MS);
+    if (__rl_timestamps.length < RL_MAX_PER_MIN){
+      __rl_timestamps.push(now);
+      return;
+    }
+    const waitMs = (RL_INTERVAL_MS - (now - __rl_timestamps[0])) + Math.floor(Math.random()*250);
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+}
+
+/** Exponential backoff with jitter for 429/5xx */
+function __backoffDelay(attempt){
+  const base = Math.min(16000, 500 * Math.pow(2, attempt)); // 0.5s, 1s, 2s, 4s, 8s, 16s cap
+  const jitter = Math.floor(Math.random() * 333);
+  return base + jitter;
+}
+
+/**
+ * fetchJSON429(url, init): wraps fetch with RL gate + exponential backoff.
+ * Retries on 429 and 5xx (up to 6 attempts). On other statuses, throws immediately.
+ */
+async function fetchJSON429(url, init={}
+
+// Monkey-patch fetch for Google Sheets endpoints to use our 429-aware helper.
+(function(){
+  const __origFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init){
+    try {
+      const url = (typeof input === "string") ? input : (input && input.url) ? input.url : "";
+      if (url && url.includes("content-sheets.googleapis.com/v4/spreadsheets/")){
+        // Route through 429-aware path
+        return await (async () => {
+          const data = await fetchJSON429(url, init || {});
+          // Synthesize a Response-like object so downstream .json() keeps working
+          return new Response(new Blob([JSON.stringify(data)], {type: "application/json"}), { status: 200 });
+        })();
+      }
+    } catch(e){
+      console.warn("[fetch monkeypatch] error in wrapper", e);
+      throw e;
+    }
+    return __origFetch(input, init);
+  };
+})()
+
+){
+  let lastErr;
+  for (let attempt = 0; attempt < 6; attempt++){
+    await __rateLimitGate();
+    try {
+      const res = await fetch(url, init);
+      if (res.status === 429 || (res.status >= 500 && res.status < 600)){
+        const body = await res.text().catch(()=>"(no body)");
+        console.warn(`[fetchJSON429] ${res.status} retry #${attempt+1}`, url, body);
+        const delay = __backoffDelay(attempt);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      if (!res.ok){
+        const txt = await res.text().catch(()=>"(no body)");
+        const e = new Error(`HTTP ${res.status} ${res.statusText} for ${url}\n${txt}`);
+        e.status = res.status;
+        throw e;
+      }
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")){
+        return await res.json();
+      }
+      const txt = await res.text();
+      try { return JSON.parse(txt); }
+      catch { return { text: txt }; }
+    } catch (e){
+      lastErr = e;
+      // network errors: small delay and retry
+      const delay = __backoffDelay(attempt);
+      console.warn("[fetchJSON429] network error, retrying in", delay, "ms", e);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastErr || new Error("fetchJSON429 exhausted retries");
+}
+
 // Generic retry helper for transient fetch errors
 // Generic retry helper for transient fetch errors
 async function withRetry(fn, attempts = 3, baseDelayMs = 200){
@@ -16,9 +146,7 @@ async function withRetry(fn, attempts = 3, baseDelayMs = 200){
 }
 
 // === Rate limiting & 429-aware backoff (added) ===
-const RL_MAX_PER_MIN = 60;              // conservative cap; adjust if your quota allows
-const RL_INTERVAL_MS = 60_000;
-let __rl_timestamps = [];
+
 async function __rateLimitGate(){
   while (true){
     const now = Date.now();
@@ -66,13 +194,17 @@ async function sheetsSpreadsheetsGet(params){
 const __headerMemo = new Map();
 async function getHeaderCached(spreadsheetId, title){
   const key = spreadsheetId + '::' + title;
-  if (__headerMemo.has(key)) return __headerMemo.get(key);
-  const headerRes = await sheetsValuesGet({
-    spreadsheetId, range: `'${title}'!A1:H1`, valueRenderOption: 'UNFORMATTED_VALUE'
-  });
-  const header = headerRes.result.values?.[0] || [];
-  __headerMemo.set(key, header);
-  return header;
+  if (__headerMemo.has(key)) return await __headerMemo.get(key);
+  const p = (async () => {
+    const headerRes = await sheetsValuesGet({
+      spreadsheetId, range: `'${title}'!A1:H1`, valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+    const header = headerRes.result.values?.[0] || [];
+    __headerMemo.set(key, Promise.resolve(header)); // normalize to a settled promise
+    return header;
+  })();
+  __headerMemo.set(key, p);
+  return await p;
 }
 
 const DEBUG_LOGS = true;  // set to false to silence
@@ -88,6 +220,7 @@ let tokenClient = null;
 let accessToken = null;
 
 // --- Smooth rendering knobs ---
+let BACKGROUND_PAGE_DELAY_MS = 400;
 const RENDER_CHUNK = 200; // #rows appended to DOM per idle slice
 const ric = window.requestIdleCallback || (fn => setTimeout(() => fn({ timeRemaining: () => 8 }), 0));
 
@@ -649,21 +782,11 @@ function hasAnyActiveFilter(){
 
 function toggleBgHint() {
   try {
+    const show = !hasAnyActiveFilter();
     const hint = document.getElementById('bg-hint');
-    if (!hint) return true;
-
-    // If hasAnyActiveFilter() exists, use it; otherwise assume no active filters
-    const hasFilters =
-      typeof hasAnyActiveFilter === 'function' ? !!hasAnyActiveFilter() : false;
-
-    hint.style.display = hasFilters ? 'none' : 'block';
-    return true;
-  } catch (err) {
-    console.error('[toggleBgHint] failed:', err);
-    return false;
-  }
+    if (hint) hint.style.display = show ? 'block' : 'none';
+  } catch {}
 }
-
 
 
 function populateVendorFilter(rows) {
@@ -1301,7 +1424,6 @@ function updateDataStatus(state = "idle", message = ""){
 // ======= Background preloading (no user interaction required) =======
 const AUTO_PRELOAD_ALL = true;                 // set false to revert to infinite-scroll only
 const MAX_BACKGROUND_PAGES = Infinity;         // limit how many windows to fetch in background
-const BACKGROUND_PAGE_DELAY_MS = 50;
 
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
@@ -1785,4 +1907,49 @@ function setupInfiniteScroll() {
 if (typeof window !== 'undefined') {
   window.gapiLoaded = gapiLoaded;
   window.gisLoaded  = gisLoaded;
+}
+
+
+// ===== Singleflight + caches for sheet metadata & header =====================
+const __singleflight = new Map(); // key -> Promise
+function singleflight(key, fn){
+  if (__singleflight.has(key)) return __singleflight.get(key);
+  const p = (async () => {
+    try { return await fn(); }
+    finally { __singleflight.delete(key); }
+  })();
+  __singleflight.set(key, p);
+  return p;
+}
+
+const SHEET_META_CACHE = new Map();  // spreadsheetId -> meta
+const HEADER_CACHE = new Map();      // `${spreadsheetId}|${range}` -> header array
+
+
+async function fetchSpreadsheetMeta(spreadsheetId, apiKey){
+  const cacheKey = spreadsheetId;
+  if (SHEET_META_CACHE.has(cacheKey)) return SHEET_META_CACHE.get(cacheKey);
+  const url = `https://content-sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?includeGridData=false&key=${encodeURIComponent(apiKey)}`;
+  const p = singleflight(`meta:${cacheKey}`, async () => {
+    const data = await fetchJSON429(url, { method: "GET" });
+    SHEET_META_CACHE.set(cacheKey, data);
+    return data;
+  });
+  return await p;
+}
+
+
+async function fetchSheetHeader(spreadsheetId, apiKey, sheetName, startCol="A", endCol="H"){
+  const range = `'${sheetName}'!${startCol}1:${endCol}1`;
+  const cacheKey = `${spreadsheetId}|${range}`;
+  if (HEADER_CACHE.has(cacheKey)) return HEADER_CACHE.get(cacheKey);
+  const base = `https://content-sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
+  const url = `${base}?valueRenderOption=UNFORMATTED_VALUE&key=${encodeURIComponent(apiKey)}`;
+  const p = singleflight(`hdr:${cacheKey}`, async () => {
+    const json = await fetchJSON429(url, { method: "GET" });
+    const values = (json && json.values && json.values[0]) ? json.values[0] : [];
+    HEADER_CACHE.set(cacheKey, values);
+    return values;
+  });
+  return await p;
 }
