@@ -1,13 +1,4 @@
-/* airtable.service.js
-   Lightweight client for Airtable REST (list, create, patch, read).
-   Exposes global: window.AirtableService, window.AIRTABLE_CONFIG, window.AIRTABLE_LOGGER
-   NOTE: API key is HARD-CODED below. Replace the placeholder with your real PAT.
 
-   Logging:
-   - Set level via localStorage.setItem('AIRTABLE_LOG_LEVEL','debug'|'info'|'warn'|'error'|'silent')
-     or add ?atlog=debug to the URL.
-   - Logs redact your PAT automatically.
-*/
 (function (global) {
   "use strict";
 
