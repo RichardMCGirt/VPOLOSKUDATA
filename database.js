@@ -1,11 +1,78 @@
 // Generic retry helper for transient fetch errors
+// Generic retry helper for transient fetch errors
 async function withRetry(fn, attempts = 3, baseDelayMs = 200){
   let lastErr;
   for (let i = 0; i < attempts; i++) {
-    try { return await fn(); }
-    catch (e) { lastErr = e; await new Promise(r => setTimeout(r, baseDelayMs * Math.pow(2, i))); }
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const jitter = 0.8 + Math.random()*0.4;
+      const delay = Math.floor((baseDelayMs * Math.pow(2, i)) * jitter);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
   throw lastErr;
+}
+
+// === Rate limiting & 429-aware backoff (added) ===
+const RL_MAX_PER_MIN = 60;              // conservative cap; adjust if your quota allows
+const RL_INTERVAL_MS = 60_000;
+let __rl_timestamps = [];
+async function __rateLimitGate(){
+  while (true){
+    const now = Date.now();
+    __rl_timestamps = __rl_timestamps.filter(t => now - t < RL_INTERVAL_MS);
+    if (__rl_timestamps.length < RL_MAX_PER_MIN){
+      __rl_timestamps.push(now);
+      return;
+    }
+    const waitMs = (RL_INTERVAL_MS - (now - __rl_timestamps[0])) + Math.floor(Math.random()*250);
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+}
+async function withBackoff429(fn, attempts=5){
+  let lastErr;
+  for (let i=0;i<attempts;i++){
+    try{
+      await __rateLimitGate();
+      return await fn();
+    }catch(e){
+      const status = e?.status || e?.result?.error?.code;
+      if (status !== 429 && status !== 503) throw e;
+      // Respect Retry-After if present, else exponential backoff with jitter
+      let ra = 0;
+      try {
+        const h = e?.headers;
+        ra = Number(h?.['retry-after'] || h?.get?.('Retry-After') || 0);
+      } catch {}
+      const base = ra > 0 ? ra : Math.pow(2, i);
+      const jitter = (Math.random()*0.4)+0.8;
+      const delay = Math.min(30_000, base*1000*jitter);
+      await new Promise(r => setTimeout(r, delay));
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+async function sheetsValuesGet(params){
+  return await withBackoff429(() => gapi.client.sheets.spreadsheets.values.get(params));
+}
+async function sheetsSpreadsheetsGet(params){
+  return await withBackoff429(() => gapi.client.sheets.spreadsheets.get(params));
+}
+
+// Cache header row per (spreadsheetId,title) for this session
+const __headerMemo = new Map();
+async function getHeaderCached(spreadsheetId, title){
+  const key = spreadsheetId + '::' + title;
+  if (__headerMemo.has(key)) return __headerMemo.get(key);
+  const headerRes = await sheetsValuesGet({
+    spreadsheetId, range: `'${title}'!A1:H1`, valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const header = headerRes.result.values?.[0] || [];
+  __headerMemo.set(key, header);
+  return header;
 }
 
 const DEBUG_LOGS = true;  // set to false to silence
@@ -319,7 +386,7 @@ function gapiLoaded() {
       setDisabled("categoryFilter", false);
       setDisabled("clearFilters", false);
 
-      showEl("table-container", true);
+      showEl("table-container", false);
       showEl("loadingBarOverlay", true);
       await listSheetData();
     } catch (e) {
@@ -401,7 +468,7 @@ function makeSkuHelper(sku, vendor) {
 
 async function getSheetTitleByGid(spreadsheetId, gidNumber) {
   try {
-    const meta = await gapi.client.sheets.spreadsheets.get({
+    const meta = await sheetsSpreadsheetsGet({
       spreadsheetId,
       includeGridData: false,
     });
@@ -568,6 +635,16 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
 }
 
 // ====================== Filters & Search ============================
+// === Background-first: render only when a filter or search is active ===
+function hasAnyActiveFilter(){
+  try {
+    const q = (document.getElementById("searchInput")?.value || "").trim();
+    const v = (document.getElementById("vendorFilter")?.value || "");
+    const c = (typeof ACTIVE_CATEGORY !== "undefined" && ACTIVE_CATEGORY) ? ACTIVE_CATEGORY : (document.getElementById("categoryFilter")?.value || "");
+    return !!(q || v || c);
+  } catch(_) { return false; }
+}
+
 function populateVendorFilter(rows) {
   const sel = document.getElementById("vendorFilter");
   if (!sel) return;
@@ -618,7 +695,21 @@ function renderCategoryChips() {
 function applyFilters(opts = {}){
   const { render = true, sort = "alpha" } = opts;
 
-  const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS))
+  
+  // Only show table when at least one filter/search is active
+  if (!hasAnyActiveFilter()) {
+    try {
+      const table = document.getElementById('data-table') || ensureTable();
+      const tbody = table.querySelector('tbody');
+      if (tbody) tbody.innerHTML = '';
+      showEl && showEl('table-container', false);
+    } catch(_) {}
+    FILTERED_ROWS = [];
+    return;
+  } else {
+    showEl && showEl('table-container', true);
+  }
+const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS))
     ? FILTERED_ROWS.length : 0;
   dbg("[applyFilters] before:", beforeCount, "ALL_ROWS:", (Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0));
 
@@ -1208,6 +1299,7 @@ async function preloadAllPages() {
   }
 }
 function renderTableAppendChunked(rows, startIdx = 0){
+  if (!hasAnyActiveFilter()) { return; }
   let i = startIdx;
   function work(deadline){
     // Append in RENDER_CHUNK slices while we still have idle time
@@ -1250,17 +1342,13 @@ async function listSheetData() {
     }
   })();
 
-  // 1) Reset & skeleton
-  ALL_ROWS = [];
-  FILTERED_ROWS = [];
-  _pageCursor = 0; _noMorePages = false;
+  // 1) Reset state only (no skeleton, no initial table render)
+ALL_ROWS = [];
+FILTERED_ROWS = [];
+_pageCursor = 0; _noMorePages = false;
+// Start background fetch for first window silently
+await loadNextPage();
 
-  showEl && showEl("table-container", true);
-  showSkeletonRows(8);
-
-  // 2) Load first window fresh
-  await loadNextPage();
-  removeSkeletonRows();
 
   // 3) Prefetch next window quickly
   setTimeout(() => { loadNextPage().catch(() => {}); }, 0);
@@ -1296,12 +1384,12 @@ function wireControlsOnce() {
   const clearCartBtn = document.getElementById("clearCart");
   const addLaborBtn  = document.getElementById("addLabor");
 
-  if (search) search.addEventListener("input", debounce(() => applyFilters({ render: true, sort: "alpha" }), 120));
-  if (vendor) vendor.addEventListener("change", () => applyFilters({ render: true, sort: "alpha" }));
+  if (search) search.addEventListener("input", debounce(() => applyFilters({ render: true, sort: "stable" }), 120));
+  if (vendor) vendor.addEventListener("change", () => applyFilters({ render: true, sort: "stable" }));
   if (catSel) catSel.addEventListener("change", () => {
     ACTIVE_CATEGORY = catSel.value || "";
     renderCategoryChips();
-    applyFilters({ render: true, sort: "alpha" });
+    applyFilters({ render: true, sort: "stable" });
   });
 
   if (clear) clear.addEventListener("click", () => {
@@ -1311,7 +1399,7 @@ function wireControlsOnce() {
     const catSel2 = document.getElementById("categoryFilter");
     if (catSel2) catSel2.value = "";
     renderCategoryChips();
-    applyFilters({ render: true, sort: "alpha" });
+    applyFilters({ render: true, sort: "stable" });
   });
 
   if (clearCartBtn) clearCartBtn.addEventListener("click", clearCart);
@@ -1381,22 +1469,18 @@ async function resolveSheetTitle(spreadsheetId, gidNumber) {
 }
 
 async function fetchRowsWindow(spreadsheetId, gidNumber, pageIdx, pageSize) {
-dbg("[fetchRowsWindow] pageIdx:", pageIdx, "pageSize:", pageSize);
+  dbg("[fetchRowsWindow] pageIdx:", pageIdx, "pageSize:", pageSize);
 
   const title = await resolveSheetTitle(spreadsheetId, gidNumber);
-  const headerRes = await gapi.client.sheets.spreadsheets.values.get({
-    spreadsheetId, range: `'${title}'!A1:H1`,
-    valueRenderOption: 'UNFORMATTED_VALUE'
-  });
-  const header = headerRes.result.values?.[0] || [];
-  dbg('[fetchRowsWindow] header:', header);
-
+  // Header fetched once per session and memoized
+  const header = await getHeaderCached(spreadsheetId, title);
+  dbg('[fetchRowsWindow] header length:', header.length);
 
   const startRow = (pageIdx * pageSize) + 2;
   const endRow   = startRow + pageSize - 1;
   const range    = `'${title}'!A${startRow}:H${endRow}`;
 
-  const res = await gapi.client.sheets.spreadsheets.values.get({
+  const res = await sheetsValuesGet({
     spreadsheetId, range, valueRenderOption: 'UNFORMATTED_VALUE'
   });
   const dataRows = res.result.values || [];
@@ -1466,7 +1550,8 @@ dbg("[transformWindowRows] header length:", (header||[]).length, "dataRows:", (d
 }
 
 function renderTableAppend(rows) {
-dbg("[renderTableAppend] appending rows:", rows ? rows.length : 0);
+if (!hasAnyActiveFilter()) { return; }
+  dbg("[renderTableAppend] appending rows:", rows ? rows.length : 0);
 
   const table = document.getElementById('data-table') || ensureTable();
   const thead = table.querySelector('thead');

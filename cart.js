@@ -176,7 +176,7 @@
       populateSelectStrings(els.neededBy, neededBy);
       populateSelectStrings(els.reason, reason);
 
-      setStatus("Ready", "ok");
+      setStatus("", "");
     } catch (err) {
       logger.error?.("dropdowns", err);
       setStatus("Failed to load dropdowns", "err");
