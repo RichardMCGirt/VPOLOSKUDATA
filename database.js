@@ -20,6 +20,11 @@ let tokenClient = null;
 
 let accessToken = null;
 
+// --- Smooth rendering knobs ---
+const RENDER_CHUNK = 200; // #rows appended to DOM per idle slice
+const ric = window.requestIdleCallback || (fn => setTimeout(() => fn({ timeRemaining: () => 8 }), 0));
+
+let _ingestSeq = 0; // monotonically increasing id assigned to each row as it arrives
 
 
 let _controlsWired = false;
@@ -69,20 +74,29 @@ let LABOR_LINES = [];
 let ALL_CATEGORIES = [];
 let ACTIVE_CATEGORY = "";
 // --- Cart tab reuse (one source of truth) ---
+// --- Cart tab reuse (define once) ---
 const CART_URL = "cart.html";
 const CART_WINDOW_NAME = "vanir_cart_tab";
-const cartChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
 
 function openOrFocusCart(e){
   if (e) e.preventDefault();
-  const w = window.open(CART_URL, CART_WINDOW_NAME); // reuse same named tab
+  const w = window.open(CART_URL, CART_WINDOW_NAME); // 👈 named window (reused)
   try { w && w.focus && w.focus(); } catch {}
   try { cartChannel?.postMessage({ type: "focus" }); } catch {}
 }
+function persistCart() {
+  try {
+    localStorage.setItem("vanir_cart", JSON.stringify(Array.from(CART.entries())));
+  } catch (err) { console.error("Persist cart failed", err); }
+}
+
+// Whenever you add/remove/clear items:
+persistCart();
 
 function maybeEnableButtons() {
-  const cartFab = document.getElementById("cartFab");
-  if (cartFab) cartFab.onclick = openOrFocusCart;
+  const authBtn    = document.getElementById("authorize_button");
+  const signoutBtn = document.getElementById("signout_button");
+  const cartFab    = document.getElementById("cartFab");
 
   if (authBtn) {
     authBtn.onclick = () => {
@@ -96,7 +110,6 @@ function maybeEnableButtons() {
       clearLocalToken();
       showEl("authorize_button", true);
       showEl("signout_button", false);
-
       const tbody = document.querySelector("#data-table tbody");
       if (tbody) tbody.innerHTML = "";
       ALL_ROWS = [];
@@ -114,39 +127,14 @@ function maybeEnableButtons() {
   }
 
   if (cartFab) {
-  cartFab.onclick = (e) => {
-    e.preventDefault();
-    window.location.assign("cart.html"); // or: location.href = "cart.html";
-  };
-}
+    cartFab.onclick = openOrFocusCart; // 👈 single source of truth
+  }
 
-
-  // (Optional) if you also have a link with id="cartLink", reuse the same opener:
+  // (Optional) for a text link elsewhere:
   const cartLink = document.getElementById("cartLink");
   if (cartLink) cartLink.addEventListener("click", openOrFocusCart);
 }
 
-// ======== Token persistence & silent refresh ========
-const TOKEN_STORAGE_KEY = "vanir_gis_token_v1";
-let refreshTimerId = null;
-let LAST_QTY = Number(localStorage.getItem("vanir_last_qty") || 1) || 1;
-
-function qtyFromUI(qtyEl){
-  const q = Math.max(1, Math.floor(Number(qtyEl?.value) || LAST_QTY || 0));
-  LAST_QTY = q; localStorage.setItem("vanir_last_qty", String(q));
-  return q;
-}
-
-
-// In maybeEnableButtons(), replace the FAB click:
-if (cartFab) {
-  cartFab.onclick = (e) => {
-    e.preventDefault();
-    const w = window.open(CART_URL, CART_WINDOW_NAME);
-    try { w && w.focus && w.focus(); } catch {}
-    try { cartChannel?.postMessage({ type: "focus" }); } catch {}
-  };
-}
 FILTERED_ROWS = [];
 
 
@@ -568,7 +556,7 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
         <td data-label="SKU">${escapeHtml(r.sku)}</td>
         <td data-label="UOM">${escapeHtml(r.uom)}</td>
         <td data-label="Description">${escapeHtml(r.description)}</td>
-        <td data-label="Qty"><input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="1" id="qty_${idx}"></td>
+        <td data-label="Qty"><input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="0" id="qty_${idx}"></td>
         <td data-label="" class="row-actions">
           <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
         </td>
@@ -576,16 +564,7 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
     }).join("");
   }
 
-  // Delegate clicks for Add
-  tbody.onclick = (ev) => {
-    const btn = ev.target.closest(".add-to-cart");
-    if (!btn) return;
-    const idx = Number(btn.getAttribute("data-idx") || "0");
-    const qtyInput = document.getElementById(`qty_${idx}`);
-    let qty = Number(qtyInput?.value || 1);
-    if (!Number.isFinite(qty) || qty <= 0) qty = 1;
-    addToCart(rows[idx], qty);
-  };
+
 }
 
 // ====================== Filters & Search ============================
@@ -636,15 +615,19 @@ function renderCategoryChips() {
     applyFilters();
   };
 }
-function applyFilters() {
-const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS)) ? FILTERED_ROWS.length : 0;
-  dbg("[applyFilters] before:", beforeCount, "ALL_ROWS:", (Array.isArray(ALL_ROWS)? ALL_ROWS.length : 0));
+function applyFilters(opts = {}){
+  const { render = true, sort = "alpha" } = opts;
+
+  const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS))
+    ? FILTERED_ROWS.length : 0;
+  dbg("[applyFilters] before:", beforeCount, "ALL_ROWS:", (Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0));
 
   const q    = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
   const vSel = (document.getElementById("vendorFilter")?.value || "");
   const cSel = ACTIVE_CATEGORY || (document.getElementById("categoryFilter")?.value || "");
 
-  const filtered = ALL_ROWS.filter(r => {
+  // Compute only — do not touch DOM here
+  const filtered = (ALL_ROWS || []).filter(r => {
     const matchesVendor = !vSel || r.vendor === vSel;
     const matchesCat    = !cSel || r.category === cSel;
     const hay = `${r.sku} ${r.description}`.toLowerCase();
@@ -652,16 +635,35 @@ const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTE
     return matchesVendor && matchesCat && matchesQuery;
   });
 
-  FILTERED_ROWS = filtered.sort((a,b) =>
-    (a.category || "").localeCompare(b.category || "") ||
-    a.description.localeCompare(b.description) ||
-    a.sku.localeCompare(b.sku))
+  let arr = filtered.slice();
 
-  renderTable(FILTERED_ROWS);
+  if (sort === "alpha"){
+    // Your old alpha comparator
+    arr.sort((a,b) =>
+      (a.category || "").localeCompare(b.category || "") ||
+      a.description.localeCompare(b.description) ||
+      a.sku.localeCompare(b.sku)
+    );
+  } else {
+    // "stable" = preserve ingestion order while background pages load
+    arr.sort((a,b) => (a._seq || 0) - (b._seq || 0));
+  }
+
+  FILTERED_ROWS = arr;
+
+  if (!render) return; // background path ends here
+
+  // Foreground renders use chunked append for smoothness
+  const table = document.getElementById('data-table') || ensureTable();
+  const tbody = table.querySelector('tbody');
+  if (tbody) tbody.innerHTML = '';
+  renderTableAppendChunked(FILTERED_ROWS, 0);
 }
+
 
 // ====================== Cart ============================
 function addToCart(row, qty) {
+  if (!(qty > 0)) return; // ignore 0 / invalid
 const key = `${row.sku}|${row.vendor}|${row.uom || ''}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
@@ -944,6 +946,85 @@ function updateCartBadge() {
 }
 
 
+
+
+// ======= Cross-tab cart sync (BroadcastChannel + back/forward cache) =======
+try {
+  var cartChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
+} catch (_) { var cartChannel = null; }
+
+if (cartChannel) {
+  cartChannel.onmessage = function (ev) {
+    var msg = ev && ev.data;
+    if (!msg || !msg.type) return;
+    if (msg.type === "focus") {
+      try { window.focus(); } catch (_) {}
+      return;
+    }
+    if (msg.type === "cart:update") {
+      try {
+        var s = msg.state || {};
+        if (Array.isArray(s.cart)) {
+          // Replace in-memory state with incoming
+          CART.clear();
+          for (var i = 0; i < s.cart.length; i++) {
+            var it = s.cart[i] || {};
+            var safeQty = Math.max(0, Number(it.qty) || 0);
+            CART.set(String(it.key || ""), {
+              row: it.row || {},
+              qty: safeQty,
+              unitBase: Number(it.unitBase) || 0,
+              marginPct: Math.max(0, Number(it.marginPct) || 0)
+            });
+          }
+          if (Array.isArray(s.labor)) {
+            LABOR_LINES = s.labor.slice();
+          }
+          // Persist & refresh UI
+          try { persistState(); } catch (_e) {}
+          try { renderCart(); } catch (_e2) {}
+          try { updateCartBadge(); } catch (_e3) {}
+        }
+      } catch (e) {
+        console.error("[cart] Failed to apply broadcast update:", e);
+      }
+    }
+  };
+}
+
+// When navigating back to this page (bfcache), resync the cart from localStorage
+window.addEventListener("pageshow", function () {
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      CART.clear(); LABOR_LINES = [];
+      try { renderCart(); } catch (_) {}
+      try { updateCartBadge(); } catch (_) {}
+      return;
+    }
+    var s = JSON.parse(raw);
+    if (!s || !Array.isArray(s.cart)) return;
+    CART.clear();
+    for (var i = 0; i < s.cart.length; i++) {
+      var it = s.cart[i] || {};
+      var safeQty = Math.max(0, Number(it.qty) || 0);
+      CART.set(String(it.key || ""), {
+        row: it.row || {},
+        qty: safeQty,
+        unitBase: Number(it.unitBase) || 0,
+        marginPct: Math.max(0, Number(it.marginPct) || 0)
+      });
+    }
+    if (Array.isArray(s.labor)) {
+      LABOR_LINES = s.labor.slice();
+    }
+    try { renderCart(); } catch (_) {}
+    try { updateCartBadge(); } catch (_) {}
+  } catch (e) {
+    console.warn("[cart] pageshow resync issue:", e);
+  }
+}, { passive: true });
+
 // ========= Persistence =========
 const STORAGE_KEY = "vanir_cart_v1";
 let _restoreCache = null;
@@ -1046,6 +1127,7 @@ function fingerprintRows(rows, limit = 400){
     return (h >>> 0).toString(36) + ":" + Math.min(limit, (rows||[]).length);
   } catch(e){ return "0"; }
 }
+cartChannel?.postMessage({ type: "cartUpdate", cart: Array.from(CART.entries()) });
 
 // Cache helpers
 function loadProductCache(){
@@ -1106,7 +1188,7 @@ function updateDataStatus(state = "idle", message = ""){
 // ======= Background preloading (no user interaction required) =======
 const AUTO_PRELOAD_ALL = true;                 // set false to revert to infinite-scroll only
 const MAX_BACKGROUND_PAGES = Infinity;         // limit how many windows to fetch in background
-const BACKGROUND_PAGE_DELAY_MS = 0;            // small yield between pages to keep UI responsive
+const BACKGROUND_PAGE_DELAY_MS = 50;
 
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
@@ -1124,6 +1206,19 @@ async function preloadAllPages() {
     console.error("[preloadAllPages] failed", e);
     updateDataStatus && updateDataStatus("error", "Preload failed");
   }
+}
+function renderTableAppendChunked(rows, startIdx = 0){
+  let i = startIdx;
+  function work(deadline){
+    // Append in RENDER_CHUNK slices while we still have idle time
+    while (i < rows.length && deadline.timeRemaining() > 1){
+      const end = Math.min(i + RENDER_CHUNK, rows.length);
+      renderTableAppend(rows.slice(i, end));
+      i = end;
+    }
+    if (i < rows.length) ric(work);
+  }
+  ric(work);
 }
 
 // ====================== Main Flow ========================
@@ -1187,6 +1282,7 @@ async function listSheetData() {
 }
 
 
+
 // ====================== Controls Wiring ===================
 
 function wireControlsOnce() {
@@ -1200,27 +1296,28 @@ function wireControlsOnce() {
   const clearCartBtn = document.getElementById("clearCart");
   const addLaborBtn  = document.getElementById("addLabor");
 
-  if (search) search.addEventListener("input", debounce(applyFilters, 120));
-  if (vendor) vendor.addEventListener("change", applyFilters);
+  if (search) search.addEventListener("input", debounce(() => applyFilters({ render: true, sort: "alpha" }), 120));
+  if (vendor) vendor.addEventListener("change", () => applyFilters({ render: true, sort: "alpha" }));
   if (catSel) catSel.addEventListener("change", () => {
     ACTIVE_CATEGORY = catSel.value || "";
     renderCategoryChips();
-    applyFilters();
+    applyFilters({ render: true, sort: "alpha" });
   });
 
-  if (clear)  clear.addEventListener("click", () => {
+  if (clear) clear.addEventListener("click", () => {
     if (search) search.value = "";
     if (vendor) vendor.value = "";
     ACTIVE_CATEGORY = "";
     const catSel2 = document.getElementById("categoryFilter");
     if (catSel2) catSel2.value = "";
     renderCategoryChips();
-    applyFilters();
+    applyFilters({ render: true, sort: "alpha" });
   });
 
   if (clearCartBtn) clearCartBtn.addEventListener("click", clearCart);
-  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0, 1, "Labor line", 0)); // default 0% margin
+  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0, 1, "Labor line", 0));
 }
+
 
 // ====================== Toast/UX/Utils =========================
 function showToast(message = "Done") {
@@ -1394,7 +1491,7 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
       <td data-label="SKU">${escapeHtml(r.sku)}</td>
       <td data-label="UOM">${escapeHtml(r.uom || '')}</td>
       <td data-label="Description">${escapeHtml(r.description || '')}</td>
-      <td data-label="Qty"><input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="1"></td>
+      <td data-label="Qty"><input aria-label="Quantity" type="number" class="qty-input" min="0" step="1" value="0"></td>
       <td data-label="" class="row-actions">
         <button class="btn add-to-cart">Add</button>
       </td>`;
@@ -1410,8 +1507,8 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
       const tr = btn.closest('tr');
       const key = tr.getAttribute('data-key');
       const qtyInput = tr.querySelector('input[type="number"]');
-      const qty = Math.max(1, Math.floor(Number(qtyInput && qtyInput.value) || 1));
-      const item = (Array.isArray(ALL_ROWS) ? ALL_ROWS : []).find(r => `${r.sku}|${r.vendor}|${r.uom || ''}` === key);
+  let qty = Math.max(0, Math.floor(Number(qtyInput && qtyInput.value) || 0));
+    if (qty <= 0) { showToast('Enter a quantity first.'); return; }      const item = (Array.isArray(ALL_ROWS) ? ALL_ROWS : []).find(r => `${r.sku}|${r.vendor}|${r.uom || ''}` === key);
       if (item && typeof addToCart === 'function') addToCart(item, qty);
     });
   }
@@ -1474,33 +1571,58 @@ async function loadNextPage() {
     );
     const { header, dataRows } = resp;
     const windowRows = transformWindowRows(header, dataRows);
-    dbg('[loadNextPage] windowRows length:', windowRows ? windowRows.length : 0);
 
-    if (!windowRows.length) {
+    dbg("[fetchRowsWindow] pageIdx:", _pageCursor, "pageSize:", VIRTUAL_PAGE_SIZE, "got:", windowRows.length);
+
+    if (windowRows.length === 0) {
       _noMorePages = true;
       return;
     }
 
-    if (!Array.isArray(windowRows)) return;
-    if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
-    ALL_ROWS.push(...windowRows);
-    _saveProductCacheDebounced && _saveProductCacheDebounced();   // save to cache
-    dbg('[loadNextPage] ALL_ROWS after push:', ALL_ROWS.length);
-
     if (_pageCursor === 0) {
-      if (typeof buildCategories === 'function') buildCategories(ALL_ROWS);
-      if (typeof populateVendorFilter === 'function') populateVendorFilter(ALL_ROWS);
-      if (typeof populateCategoryFilter === 'function') populateCategoryFilter(ALL_ROWS);
+      // First page — initialize table and filters
+      if (typeof buildCategories === 'function') buildCategories(windowRows);
+      if (typeof populateVendorFilter === 'function') populateVendorFilter(windowRows);
+      if (typeof populateCategoryFilter === 'function') populateCategoryFilter(windowRows);
       if (typeof renderCategoryChips === 'function') renderCategoryChips();
 
+      // Reset table body before first paint
+      const table = document.getElementById('data-table') || ensureTable();
+      const tbody = table.querySelector('tbody');
+      if (tbody) tbody.innerHTML = '';
+    }
+
+    // Append to master list then (re)filter
+    if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
+    Array.prototype.push.apply(ALL_ROWS, windowRows);
+
+    // If we have a cart, refresh prices that might be impacted by new rows
+    if (typeof reconcileCartWithCatalog === 'function') {
+      try { reconcileCartWithCatalog(ALL_ROWS); } catch (e) { console.warn("[cart reconcile] err", e); }
+    }
+
+    // Prefetch next page opportunistically
+    if (VIRTUAL_PREFETCH > 0) {
+      setTimeout(() => {
+        if (!_noMorePages && !_isLoadingPage) {
+          fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor + 1, VIRTUAL_PAGE_SIZE)
+            .then(({ header, dataRows }) => {
+              if (!Array.isArray(_prefetched)) _prefetched = {};
+              _prefetched[_pageCursor + 1] = { header, dataRows };
+            })
+            .catch(() => {});
+        }
+      }, 0);
+    }
+
+    // Render strategy:
+    //  - First page: full applyFilters + renderTableAppend of entire filtered set
+    //  - Subsequent pages: compute delta after applyFilters and only append new rows
+    if (_pageCursor === 0) {
       try { if (typeof applyFilters === 'function') applyFilters(); }
       catch (e) { console.error('[loadNextPage] applyFilters error', e); }
-
       const current = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.slice() : [];
-      const tbody = (document.getElementById('data-table') || ensureTable()).querySelector('tbody');
-      if (tbody) tbody.innerHTML = '';
       renderTableAppend(current);
-      updateDataStatus && updateDataStatus('fresh', 'Up to date • ' + new Date().toLocaleTimeString());
     } else {
       const before = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
       try { if (typeof applyFilters === 'function') applyFilters(); }
@@ -1517,6 +1639,7 @@ async function loadNextPage() {
     _isLoadingPage = false;
   }
 }
+
 
 
 
