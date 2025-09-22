@@ -1,315 +1,249 @@
- // Keep keys identical to your main app
-    const STORAGE_KEY = "vanir_cart_v1";
-    const DEFAULT_PRODUCT_MARGIN_PCT = 30; // fallback only
+/* cart.js
+   Wires the Fill-In form to AirtableService:
+   - Populates Branch & Field Manager from SOURCE TABLES (linked records; values = record IDs)
+   - Populates Needed By & Reason by scanning current Fill-In view (plain/single-select)
+   - Saves/patches a record on "Save to Airtable"
+   - Prefills when ?rec=recXXXX is present
+   Requires: airtable.service.js
+*/
+(function () {
+  "use strict";
 
-    // ---- Utils ----
-    function formatMoney(n){
-      const x = Number(n ?? 0);
-      if (!Number.isFinite(x)) return "$0.00";
-      return x.toLocaleString(undefined, { style:"currency", currency:"USD", minimumFractionDigits:2, maximumFractionDigits:2 });
-    }
-    function escapeHtml(s){
-      return String(s ?? "")
-        .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
-        .replaceAll('"','&quot;').replaceAll("'","&#039;");
-    }
-    function showToast(message="Done"){
-      const el = document.getElementById("toast"); if (!el) return;
-      el.textContent = message;
-      el.style.visibility = "visible";
-      el.style.opacity = "1";
-      el.classList.add("show");
-      setTimeout(() => { el.style.opacity = "0"; el.classList.remove("show"); el.style.visibility = "hidden"; }, 1800);
-    }
+  // ------- DOM helpers -------
+  const $ = (sel) => document.querySelector(sel);
 
-    // ---- State: load from localStorage written by index page ----
-    let STATE = {
-      cart: [],           // [{ key, qty, unitBase, marginPct, row: {...} }]
-      labor: [],          // [{ id, rate, qty, name, marginPct }]
-      laborIdSeq: 1,      // number
+  const els = {
+    banner: $("#airtableBanner"),
+    status: $("#airtableStatus"),
+    btnSave: $("#saveAirtable"),
+
+    customerName: $("#customerName"),
+    branch: $("#branchSelect"),
+    fieldMgr: $("#fieldManagerSelect"),
+    neededBy: $("#neededBySelect"),
+    reason: $("#reasonSelect"),
+
+    jobName: $("#jobName"),
+    planName: $("#planName"),
+    elevation: $("#elevation"),
+    materialsNeeded: $("#materialsNeeded"),
+    pleaseDescribe: $("#pleaseDescribe"),
+
+    toast: $("#toast"),
+  };
+
+  const logger = window.AIRTABLE_LOGGER || console;
+
+  // ------- UI status / toast -------
+  function setStatus(text, tone = "idle") {
+    if (!els.status) return;
+    els.status.textContent = text;
+    els.status.setAttribute("data-tone", tone);
+    const colors = { idle:"rgba(0,0,0,.04)", info:"#e6f0ff", ok:"#e7f9ee", warn:"#fff9e6", err:"#ffe9e6" };
+    els.status.style.background = colors[tone] || colors.idle;
+  }
+
+  let toastTimer = null;
+  function showToast(msg, ms = 2200) {
+    if (!els.toast) return;
+    els.toast.textContent = msg;
+    els.toast.style.display = "block";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (els.toast.style.display = "none"), ms);
+  }
+
+  // ------- Select helpers -------
+  function clearSelect(sel) { while (sel.firstChild) sel.removeChild(sel.firstChild); }
+  function addPlaceholder(sel, text = "—") { const opt=document.createElement("option"); opt.value=""; opt.textContent=text; sel.appendChild(opt); }
+  function populateSelectWithPairs(sel, pairs) {
+    clearSelect(sel); addPlaceholder(sel);
+    (pairs||[]).forEach(({value,label}) => { const opt=document.createElement("option"); opt.value=value; opt.textContent=label; sel.appendChild(opt); });
+  }
+  function populateSelectStrings(sel, values) {
+    clearSelect(sel); addPlaceholder(sel);
+    (values||[]).forEach((v)=>{ const opt=document.createElement("option"); const str=String(v).trim(); opt.value=str; opt.textContent=str; sel.appendChild(opt); });
+  }
+  const nonEmpty = (v) => v != null && String(v).trim().length > 0;
+
+  // ------- Caches for label<->id mapping -------
+  const maps = {
+    branch: { idToLabel: new Map(), labelToId: new Map() },
+    fieldMgr: { idToLabel: new Map(), labelToId: new Map() },
+  };
+
+  // ------- Save logic -------
+  async function saveToAirtable(service, recordId) {
+    const fields = {
+      "Customer Name": els.customerName.value || undefined,
+      "Job Name": els.jobName.value || undefined,
+      "Plan Name": els.planName.value || undefined,
+      "Elevation": els.elevation.value || undefined,
+      "Materials Needed": nonEmpty(els.materialsNeeded.value) ? els.materialsNeeded.value : undefined,
+      "Reason For Fill In": els.reason.value || undefined,
+      "Needed By": els.neededBy.value || undefined,
     };
 
-    function loadState(){
+    // Linked record fields must be arrays of record IDs
+    if (els.branch.value) fields["Branch"] = [els.branch.value];
+    if (els.fieldMgr.value) fields["Field Manager"] = [els.fieldMgr.value];
+
+    // Strip empties
+    Object.keys(fields).forEach((k) => { if (fields[k] === undefined || fields[k] === "") delete fields[k]; });
+
+    els.btnSave.disabled = true;
+    setStatus("Saving…", "info");
+
+    try {
+      let resp;
+      if (recordId) {
+        logger.info?.("save", "Patching record", recordId, fields);
+        resp = await service.patchRecord(recordId, fields);
+      } else {
+        logger.info?.("save", "Creating record", fields);
+        resp = await service.createRecord(fields);
+      }
+      const newId = resp?.id || resp?.records?.[0]?.id || recordId;
+      setStatus(`Saved ${newId ? `(#${newId})` : ""}`, "ok");
+      showToast("Saved to Airtable");
+      return newId || null;
+    } catch (err) {
+      logger.error?.("save", err);
+      setStatus("Save failed", "err");
+      showToast("Save failed — check console");
+      throw err;
+    } finally {
+      els.btnSave.disabled = false;
+    }
+  }
+
+  // ------- Dropdowns init -------
+  async function initDropdowns(service) {
+    setStatus("Loading dropdowns…", "info");
+    ["branch","fieldMgr","neededBy","reason"].forEach(k => els[k]?.setAttribute("aria-busy","true"));
+
+    try {
+      // 1) Linked record options from SOURCE TABLES (values = rec IDs)
+      const [{ options: fmOptions, idToLabel: fmIdToLabel, labelToId: fmLabelToId },
+             { options: brOptions, idToLabel: brIdToLabel, labelToId: brLabelToId }] = await Promise.all([
+        service.fetchFieldManagerOptions(),
+        service.fetchBranchOptions(),
+      ]);
+
+      maps.fieldMgr.idToLabel = fmIdToLabel; maps.fieldMgr.labelToId = fmLabelToId;
+      maps.branch.idToLabel   = brIdToLabel; maps.branch.labelToId   = brLabelToId;
+
+      populateSelectWithPairs(els.fieldMgr, fmOptions.map(o => ({ value: o.id, label: o.label })));
+      populateSelectWithPairs(els.branch,   brOptions.map(o => ({ value: o.id, label: o.label })));
+
+      // 2) Plain text/single-select from current Fill-In table for "Needed By" & "Reason"
+      const { neededBy, reason } = await service.fetchDropdowns({
+        branchField: "___ignore_branch___",   // ignore scanning branch (linked)
+        fieldMgrField: "___ignore_fm___",     // ignore scanning field mgr (linked)
+        neededByField: "Needed By",
+        reasonField: "Reason For Fill In",
+      });
+      populateSelectStrings(els.neededBy, neededBy);
+      populateSelectStrings(els.reason, reason);
+
+      setStatus(
+        `Dropdowns loaded (FM: ${fmOptions.length}, Branch: ${brOptions.length}, Needed By: ${neededBy.length}, Reason: ${reason.length})`,
+        "ok"
+      );
+    } catch (err) {
+      logger.error?.("dropdowns", err);
+      setStatus("Failed to load dropdowns", "err");
+      showToast("Failed to load dropdowns — check console");
+    } finally {
+      ["branch","fieldMgr","neededBy","reason"].forEach(k => els[k]?.removeAttribute("aria-busy"));
+    }
+  }
+
+  // ------- Record prefill (handles linked IDs & label fallbacks) -------
+  function setSelectFromLinked(selectEl, rawVal, map) {
+    if (!selectEl) return;
+    if (Array.isArray(rawVal) && rawVal.length) {
+      // Linked record array of IDs (preferred)
+      const id = rawVal[0];
+      selectEl.value = id;
+      if (!selectEl.value) {
+        // If ID wasn't in options (rare), try label->id fallback
+        const label = map.idToLabel.get(id);
+        const fallbackId = label ? map.labelToId.get(label) : null;
+        if (fallbackId) selectEl.value = fallbackId;
+      }
+    } else if (typeof rawVal === "string" && rawVal.trim()) {
+      // Sometimes lookups return label strings; map back to ID
+      const id = map.labelToId.get(rawVal.trim());
+      if (id) selectEl.value = id;
+    }
+  }
+
+  async function prefillIfRecord(service, recId) {
+    if (!recId) return;
+    setStatus(`Loading record ${recId}…`, "info");
+    try {
+      const rec = await service.readRecord(recId);
+      const f = rec?.fields || {};
+
+      if (nonEmpty(f["Customer Name"])) els.customerName.value = f["Customer Name"];
+      setSelectFromLinked(els.branch, f["Branch"], maps.branch);
+      setSelectFromLinked(els.fieldMgr, f["Field Manager"], maps.fieldMgr);
+      if (nonEmpty(f["Needed By"])) els.neededBy.value = Array.isArray(f["Needed By"]) ? String(f["Needed By"][0]) : String(f["Needed By"]);
+      if (nonEmpty(f["Reason For Fill In"])) els.reason.value = Array.isArray(f["Reason For Fill In"]) ? String(f["Reason For Fill In"][0]) : String(f["Reason For Fill In"]);
+
+      if (nonEmpty(f["Job Name"])) els.jobName.value = f["Job Name"];
+      if (nonEmpty(f["Plan Name"])) els.planName.value = f["Plan Name"];
+      if (nonEmpty(f["Elevation"])) els.elevation.value = f["Elevation"];
+      if (nonEmpty(f["Materials Needed"])) els.materialsNeeded.value = Array.isArray(f["Materials Needed"]) ? String(f["Materials Needed"][0]) : String(f["Materials Needed"]);
+      if (nonEmpty(f["Please Describe"])) els.pleaseDescribe.value = Array.isArray(f["Please Describe"]) ? String(f["Please Describe"][0]) : String(f["Please Describe"]);
+
+      setStatus(`Loaded #${recId}`, "ok");
+    } catch (err) {
+      logger.error?.("prefill", err);
+      setStatus("Failed loading record", "err");
+    }
+  }
+
+  // ------- Banner logic (hard-coded PAT vs localStorage) -------
+  function updateBannerVisibility() {
+    try {
+      const hasHardcoded =
+        window.AIRTABLE_CONFIG &&
+        typeof window.AIRTABLE_CONFIG.API_KEY === "string" &&
+        window.AIRTABLE_CONFIG.API_KEY.toLowerCase().startsWith("pat");
+
+      const hasLocal =
+        typeof localStorage !== "undefined" &&
+        typeof localStorage.getItem("AIRTABLE_API_KEY") === "string" &&
+        (localStorage.getItem("AIRTABLE_API_KEY") || "").trim().length > 0;
+
+      els.banner && (els.banner.style.display = (hasHardcoded || hasLocal) ? "none" : "block");
+    } catch { els.banner && (els.banner.style.display = "none"); }
+  }
+
+  // ------- Init -------
+  document.addEventListener("DOMContentLoaded", async () => {
+    updateBannerVisibility();
+
+    let service;
+    try { service = new window.AirtableService(); }
+    catch (e) { logger.error?.("init", e); setStatus("Airtable init failed", "err"); showToast("Airtable init failed — check console"); return; }
+
+    await initDropdowns(service);
+
+    const params = new URLSearchParams(location.search);
+    const recId = params.get("rec");
+    await prefillIfRecord(service, recId);
+
+    els.btnSave?.addEventListener("click", async () => {
       try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const obj = JSON.parse(raw);
-          STATE.cart = Array.isArray(obj.cart) ? obj.cart : [];
-          STATE.labor = Array.isArray(obj.labor) ? obj.labor : [];
-          STATE.laborIdSeq = typeof obj.laborIdSeq === "number" ? obj.laborIdSeq : 1;
+        const newId = await saveToAirtable(service, recId);
+        if (!recId && newId) {
+          const next = new URL(location.href);
+          next.searchParams.set("rec", newId);
+          history.replaceState({}, "", next);
         }
-      } catch (e) { /* noop */ }
-    }
-    function persistState(){
-      // Preserve unknown fields (like activeCategory) if present
-      let existing = {};
-      try { existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch {}
-      const next = {
-        ...existing,
-        cart: STATE.cart.map(it => ({
-          key: it.key,
-          qty: Math.max(0, Math.floor(Number(it.qty) || 0)),
-          unitBase: Number(it.unitBase) || 0,
-          marginPct: Math.max(0, Number(it.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0),
-          row: {
-            vendor: it.row?.vendor ?? "",
-            sku: it.row?.sku ?? "",
-            uom: it.row?.uom ?? "",
-            description: it.row?.description ?? "",
-            price: it.row?.price,
-            priceExtended: it.row?.priceExtended,
-            category: it.row?.category ?? "Misc",
-          }
-        })),
-        labor: STATE.labor.map(l => ({
-          id: l.id,
-          rate: Number(l.rate) || 0,
-          qty: Math.max(0, Math.floor(Number(l.qty) || 0)),
-          name: l.name || "Labor line",
-          marginPct: Math.max(0, Number(l.marginPct) || 0),
-        })),
-        laborIdSeq: STATE.laborIdSeq,
-      };
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
-    }
-
-    // ---- Calculations ----
-    function itemUnitSell(item){
-      const pct = Math.max(0, Number(item?.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0);
-      return (Number(item.unitBase) || 0) * (1 + pct / 100);
-    }
-    function calcProductsTotal(){
-      let total = 0;
-      for (const it of STATE.cart) total += itemUnitSell(it) * Math.max(0, Math.floor(Number(it.qty) || 0));
-      return total;
-    }
-    function calcLaborTotal(){
-      let total = 0;
-      for (const l of STATE.labor) {
-        const qty = Math.max(0, Math.floor(Number(l.qty) || 0));
-        const rate = Math.max(0, Number(l.rate) || 0);
-        const pct = Math.max(0, Number(l.marginPct) || 0);
-        total += qty * rate * (1 + pct / 100);
-      }
-      return total;
-    }
-
-    // ---- Rendering ----
-    function renderCart(){
-      const tbody = document.querySelector("#cart-table tbody");
-      tbody.innerHTML = "";
-
-      for (const it of STATE.cart) {
-        const key = it.key || `${it?.row?.sku}|${it?.row?.vendor}`;
-        const unit = itemUnitSell(it);
-        const line = unit * Math.max(0, Math.floor(Number(it.qty) || 0));
-
-        const tr = document.createElement("tr");
-        tr.setAttribute("data-key", key);
-        tr.innerHTML = `
-          <td data-label="Vendor"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.vendor)}</span></td>
-          <td data-label="SKU"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.sku)}</span></td>
-          <td data-label="Description"><span class="cell-text nowrap-ellipsize">${escapeHtml(it.row?.description)}</span></td>
-          <td data-label="Qty">
-            <div class="stack">
-              <label class="field-label" for="cart-qty-${escapeHtml(key)}">QTY</label>
-              <input id="cart-qty-${escapeHtml(key)}" type="number" class="qty-input cart-qty" min="0" step="1" value="${Math.max(0, Math.floor(Number(it.qty) || 0))}" data-key="${escapeHtml(key)}" aria-label="Cart quantity">
-              <div class="margin-override">
-                <label class="field-label" for="cart-margin-${escapeHtml(key)}">Margin (%)</label>
-                <input id="cart-margin-${escapeHtml(key)}" type="number" class="cart-margin-pct" min="0" step="1" value="${Math.max(0, Number(it.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0)}" data-key="${escapeHtml(key)}" aria-label="Cart margin percent">
-              </div>
-            </div>
-          </td>
-          <td data-label="Unit" data-cell="unit"><span class="cell-text nowrap-ellipsize">${formatMoney(unit)}</span></td>
-          <td data-label="Line Total" data-cell="line"><span class="cell-text nowrap-ellipsize">${formatMoney(line)}</span></td>
-            <td data-label="Actions"><button class="btn danger remove-item" data-key="${escapeHtml(key)}">Remove</button></td>
-        `;
-        tbody.appendChild(tr);
-      }
-
-      // Row handlers
-      tbody.oninput = (ev) => {
-        const qtyEl = ev.target.closest(".cart-qty");
-        if (qtyEl) {
-          const key = qtyEl.getAttribute("data-key");
-          const qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
-          const it = STATE.cart.find(x => (x.key || `${x?.row?.sku}|${x?.row?.vendor}`) === key);
-          if (!it) return;
-          it.qty = qty;
-          updateTotalsCellsForRow(qtyEl.closest("tr"), it);
-          updateTotals();
-          persistState();
-          return;
-        }
-        const pctEl = ev.target.closest(".cart-margin-pct");
-        if (pctEl) {
-          const key = pctEl.getAttribute("data-key");
-          let pct = Number(pctEl.value);
-          if (!Number.isFinite(pct)) pct = DEFAULT_PRODUCT_MARGIN_PCT;
-          pct = Math.max(0, pct);
-          const it = STATE.cart.find(x => (x.key || `${x?.row?.sku}|${x?.row?.vendor}`) === key);
-          if (!it) return;
-          it.marginPct = pct;
-          updateTotalsCellsForRow(pctEl.closest("tr"), it);
-          updateTotals();
-          persistState();
-          return;
-        }
-      };
-      tbody.onclick = (ev) => {
-        const btn = ev.target.closest(".remove-item");
-        if (!btn) return;
-        const key = btn.getAttribute("data-key");
-        STATE.cart = STATE.cart.filter(x => (x.key || `${x?.row?.sku}|${x?.row?.vendor}`) !== key);
-        renderCart();
-        updateTotals();
-        persistState();
-      };
-
-      renderLabor();
-      updateTotals();
-    }
-
-    function updateTotalsCellsForRow(tr, it){
-      const unitCell = tr?.querySelector('[data-cell="unit"] .cell-text');
-      const lineCell = tr?.querySelector('[data-cell="line"] .cell-text');
-      const unit = itemUnitSell(it);
-      if (unitCell) unitCell.textContent = formatMoney(unit);
-      const qty = Math.max(0, Math.floor(Number(it.qty) || 0));
-      if (lineCell) lineCell.textContent = formatMoney(unit * qty);
-    }
-
-    function renderLabor(){
-      const wrap = document.getElementById("labor-list");
-      wrap.querySelectorAll(".labor-row").forEach(el => el.remove());
-
-      for (const l of STATE.labor) {
-        const safeQty = Math.max(0, Math.floor(Number(l.qty) || 0));
-        const safeRate = Number(l.rate) || 0;
-        const safePct = Math.max(0, Number(l.marginPct) || 0);
-
-        const row = document.createElement("div");
-        row.className = "labor-row";
-        row.innerHTML = `
-          <div class="field">
-            <label class="field-label" for="labor-name-${l.id}">Labor name</label>
-            <input id="labor-name-${l.id}" type="text" class="labor-name" data-id="${l.id}" value="${escapeHtml(l.name || "Labor line")}" placeholder="Labor line" aria-label="Labor name">
-          </div>
-          <div class="field">
-            <label class="field-label" for="labor-qty-${l.id}">QTY</label>
-            <input id="labor-qty-${l.id}" type="number" class="labor-qty" data-id="${l.id}" min="0" step="1" value="${safeQty}" placeholder="Qty" aria-label="Labor quantity">
-          </div>
-          <div class="field">
-            <label class="field-label" for="labor-rate-${l.id}">Labor cost ($)</label>
-            <input id="labor-rate-${l.id}" type="number" class="labor-rate" data-id="${l.id}" min="0" step="0.01" value="${safeRate}" placeholder="$/unit" aria-label="Labor cost per unit">
-          </div>
-          <div class="field">
-            <label class="field-label" for="labor-margin-${l.id}">Margin (%)</label>
-            <input id="labor-margin-${l.id}" type="number" class="labor-margin-pct" data-id="${l.id}" min="0" step="1" value="${safePct}" placeholder="e.g., 30" aria-label="Labor margin percent">
-          </div>
-          <div class="field">
-            <label class="field-label">&nbsp;</label>
-            <button class="btn danger remove-labor" data-id="${l.id}">Remove</button>
-          </div>
-        `;
-        wrap.appendChild(row);
-      }
-
-      wrap.oninput = (ev) => {
-        const id = Number(ev.target.getAttribute("data-id"));
-        const l = STATE.labor.find(x => x.id === id);
-        if (!l) return;
-
-        if (ev.target.classList.contains("labor-qty")) {
-          l.qty = Math.max(0, Math.floor(Number(ev.target.value) || 0));
-        } else if (ev.target.classList.contains("labor-rate")) {
-          l.rate = Math.max(0, Number(ev.target.value) || 0);
-        } else if (ev.target.classList.contains("labor-margin-pct")) {
-          let val = Number(ev.target.value);
-          if (!Number.isFinite(val)) val = 0;
-          l.marginPct = Math.max(0, val);
-        } else if (ev.target.classList.contains("labor-name")) {
-          l.name = ev.target.value;
-        }
-        updateTotals();
-        persistState();
-      };
-      wrap.onclick = (ev) => {
-        const btn = ev.target.closest(".remove-labor");
-        if (!btn) return;
-        const id = Number(btn.getAttribute("data-id"));
-        STATE.labor = STATE.labor.filter(x => x.id !== id);
-        renderLabor();
-        updateTotals();
-        persistState();
-      };
-    }
-
-    function updateTotals(){
-      document.getElementById("productTotal").textContent = formatMoney(calcProductsTotal());
-      document.getElementById("laborTotal").textContent   = formatMoney(calcLaborTotal());
-      document.getElementById("grandTotal").textContent   = formatMoney(calcProductsTotal() + calcLaborTotal());
-    }
-
-    // ---- Controls ----
-    document.getElementById("clearCart").addEventListener("click", () => {
-      STATE.cart = [];
-      renderCart();
-      updateTotals();
-      persistState();
-      showToast("Cart cleared.");
+      } catch { /* handled */ }
     });
-    document.getElementById("addLabor").addEventListener("click", () => {
-      const nextId = (STATE.laborIdSeq = (Number(STATE.laborIdSeq) || 1) + 1);
-      STATE.labor.push({ id: nextId, rate: 0, qty: 1, name: "Labor line", marginPct: 0 });
-      renderLabor();
-      updateTotals();
-      persistState();
-    });
-    document.getElementById("checkoutBtn").addEventListener("click", () => {
-      showToast("This is a placeholder. Integrate your checkout/email/export next.");
-    });
-
-    // ---- Init ----
-    loadState();
-    renderCart();
-
-    // ---- Init ----
-loadState();
-renderCart();
-updateTotals(); // ensure totals aren’t stale on first load
-
-// Cross-tab sync: update when another tab changes the cart
-window.addEventListener("storage", (e) => {
-  if (e.key === STORAGE_KEY) {
-    loadState();
-    renderCart();
-    updateTotals();
-  }
-});
-
-// When this tab becomes visible again, re-sync
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    loadState();
-    renderCart();
-    updateTotals();
-  }
-});
-// Cross-tab: update when other tab modifies the cart
-// cart.js
-window.addEventListener("storage", (e) => {
-  if (e.key === "vanir_cart_v1") { loadState(); renderCart(); updateTotals(); }
-});
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) { loadState(); renderCart(); updateTotals(); }
-});
-if ("BroadcastChannel" in window) {
-  const bc = new BroadcastChannel("vanir_cart_bc");
-  bc.onmessage = (ev) => {
-    if (ev?.data?.type === "focus") {
-      try { window.focus(); } catch {}
-      loadState(); renderCart(); updateTotals();
-    }
-  };
-}
+  });
+})();
