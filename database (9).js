@@ -642,29 +642,18 @@ function hasAnyActiveFilter(){
     const v = (document.getElementById("vendorFilter")?.value || "");
     const c = (typeof ACTIVE_CATEGORY !== "undefined" && ACTIVE_CATEGORY) ? ACTIVE_CATEGORY : (document.getElementById("categoryFilter")?.value || "");
     return !!(q || v || c);
-  } catch(_) {
-    return false;
-  }
-}
+  } 
 
 function toggleBgHint() {
   try {
+    const show = !hasAnyActiveFilter();
     const hint = document.getElementById('bg-hint');
-    if (!hint) return true;
-
-    // If hasAnyActiveFilter() exists, use it; otherwise assume no active filters
-    const hasFilters =
-      typeof hasAnyActiveFilter === 'function' ? !!hasAnyActiveFilter() : false;
-
-    hint.style.display = hasFilters ? 'none' : 'block';
-    return true;
-  } catch (err) {
-    console.error('[toggleBgHint] failed:', err);
-    return false;
-  }
+    if (hint) hint.style.display = show ? 'block' : 'none';
+  } catch {}
 }
 
-
+catch(_) { return false; }
+}
 
 function populateVendorFilter(rows) {
   const sel = document.getElementById("vendorFilter");

@@ -649,22 +649,15 @@ function hasAnyActiveFilter(){
 
 function toggleBgHint() {
   try {
+    const show = !hasAnyActiveFilter();
     const hint = document.getElementById('bg-hint');
-    if (!hint) return true;
-
-    // If hasAnyActiveFilter() exists, use it; otherwise assume no active filters
-    const hasFilters =
-      typeof hasAnyActiveFilter === 'function' ? !!hasAnyActiveFilter() : false;
-
-    hint.style.display = hasFilters ? 'none' : 'block';
-    return true;
-  } catch (err) {
-    console.error('[toggleBgHint] failed:', err);
-    return false;
-  }
+    if (hint) hint.style.display = show ? 'block' : 'none';
+  } catch {}
+}
 }
 
-
+catch(_) { return false; }
+}
 
 function populateVendorFilter(rows) {
   const sel = document.getElementById("vendorFilter");
