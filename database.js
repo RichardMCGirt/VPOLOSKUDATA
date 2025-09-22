@@ -1616,7 +1616,6 @@ async function loadNextPage() {
     }
 
     // Render strategy:
-    //  - First page: full applyFilters + renderTableAppend of entire filtered set
     //  - Subsequent pages: compute delta after applyFilters and only append new rows
     if (_pageCursor === 0) {
       try { if (typeof applyFilters === 'function') applyFilters(); }
@@ -1639,9 +1638,6 @@ async function loadNextPage() {
     _isLoadingPage = false;
   }
 }
-
-
-
 
 function setupInfiniteScroll() {
   const container = document.getElementById('table-container') || document.body;
