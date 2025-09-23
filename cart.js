@@ -4,10 +4,14 @@
    - Populates Needed By & Reason by scanning current Fill-In view (plain/single-select)
    - Saves/patches a record on "Save to Airtable"
    - Prefills when ?rec=recXXXX is present
-   - Renders cart from localStorage, supports inline qty/margin edits, per-row remove, and Clear All
+   - Renders cart from localStorage, supports inline qty edits, per-row remove, and Clear All
    - Broadcasts cart changes to other tabs (index.html) using BroadcastChannel "vanir_cart_bc"
-   - NEW: Full Labor UI — add/edit/remove rows, persists to localStorage, updates totals
-   - NEW: Branch dropdown filters out options that are NOT likely US cities (heuristic)
+   - Full Labor UI — add/edit/remove rows, persists to localStorage, updates totals
+   - Branch dropdown filters out options that are NOT likely US cities (heuristic)
+   - NEW (this update):
+       • Single global Material Margin (%) input (default 30) near totals that applies to ALL materials
+       • Removed per-row margin inputs
+       • More robust labor removal (delegated listener)
    Requires: airtable.service.js
 */
 (function () {
@@ -15,6 +19,7 @@
 
   // ---------- Shared constants ----------
   const STORAGE_KEY = "vanir_cart_v1";
+  const GLOBAL_MARGIN_KEY = "vanir_global_margin_pct";
 
   // ---------- BroadcastChannel (for live sync between pages) ----------
   const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
@@ -36,16 +41,28 @@
       style: "currency", currency: "USD"
     });
   }
-function toNumberLoose(val) {
-  if (val == null) return 0;
-  const s = String(val).replace(/[^0-9.+-]/g, ""); // strip $, %, spaces, etc.
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
-}
+  function toNumberLoose(val) {
+    if (val == null) return 0;
+    const s = String(val).replace(/[^0-9.+-]/g, ""); // strip $, %, spaces, etc.
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  }
 
+  // ---------- Global material margin ----------
+  function getGlobalMarginPct() {
+    const raw = localStorage.getItem(GLOBAL_MARGIN_KEY);
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 30;
+  }
+  function setGlobalMarginPct(pct) {
+    const v = Math.max(0, Math.floor(Number(pct) || 0));
+    try { localStorage.setItem(GLOBAL_MARGIN_KEY, String(v)); } catch {}
+    const inp = $("#globalMarginPct");
+    if (inp && String(inp.value) !== String(v)) inp.value = String(v);
+  }
 
   function itemUnitSell(item) {
-    const pct = Math.max(0, Number(item?.marginPct ?? 30) || 0);
+    const pct = getGlobalMarginPct(); // single global margin now
     return (Number(item.unitBase) || 0) * (1 + pct / 100);
   }
 
@@ -161,8 +178,6 @@ function toNumberLoose(val) {
   }
 
   // ---------- US City filter (heuristic) ----------
-  // NOTE: This is a fast client-side filter to drop obvious non-city options.
-  // If you want to enforce a strict allowlist, put names in ALLOWLIST_CITIES below.
   const US_STATE_ABBR = new Set([
     "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
     "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
@@ -170,46 +185,30 @@ function toNumberLoose(val) {
     "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
     "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"
   ]);
-
-  // Optional: keep this empty to allow any plausible US city; add names to hard-restrict.
   const ALLOWLIST_CITIES = new Set([
-    // Example (from your branches): "Raleigh","Charleston","Greensboro","Myrtle Beach","Wilmington","Columbia","Charlotte","Greenville"
+    // e.g. "Raleigh","Charleston","Greensboro","Myrtle Beach","Wilmington","Columbia","Charlotte","Greenville"
   ]);
-
-  // Reject if label contains obvious non-city signals.
   const NON_CITY_KEYWORDS = /\b(office|division|warranty|calendar|group|inc|llc|corp|company|test|sample|vendor|subcontractor|internal|template)\b/i;
 
   function isLikelyUSCity(label) {
     if (!label) return false;
     const s = String(label).trim();
     if (!s) return false;
-
-    // Hard allowlist has priority, if configured
     if (ALLOWLIST_CITIES.size && ALLOWLIST_CITIES.has(s)) return true;
-
-    // Quick rejects
-    if (/[0-9@/\\]|https?:/i.test(s)) return false;       // digits/urls
-    if (/[–—]/.test(s)) return false;                     // em/en dash often joins extra descriptors
+    if (/[0-9@/\\]|https?:/i.test(s)) return false;
+    if (/[–—]/.test(s)) return false;
     if (NON_CITY_KEYWORDS.test(s)) return false;
-
-    // Accept patterns: "City", "City City", "City, ST", "City City, ST"
     const m = s.match(/^(?<city>[A-Za-z .'-]+?)(?:,\s*(?<st>[A-Za-z]{2}))?$/);
     if (!m) return false;
-
     const city = (m.groups.city || "").trim();
     const st = m.groups.st ? m.groups.st.toUpperCase() : null;
-
     if (!city) return false;
     if (st && !US_STATE_ABBR.has(st)) return false;
-
-    // City words: 1-3 words, letters plus punctuation
     const words = city.split(/\s+/).filter(Boolean);
     if (words.length < 1 || words.length > 3) return false;
     if (!/^[A-Za-z][A-Za-z .'-]*$/.test(city)) return false;
-
     return true;
   }
-
   function filterToUSCities(options) {
     const filtered = [];
     const rejected = [];
@@ -227,18 +226,13 @@ function toNumberLoose(val) {
         service.fetchBranchOptions(),
       ]);
 
-      // Keep FULL maps (for prefill & fallbacks), but only render filtered branch options
       maps.fieldMgr.idToLabel = fmIdToLabel; maps.fieldMgr.labelToId = fmLabelToId;
       maps.branch.idToLabel   = brIdToLabel; maps.branch.labelToId   = brLabelToId;
 
-      // Field Manager: render as-is
       populateSelectWithPairs(els.fieldMgr, fmOptions.map(o => ({ value: o.id, label: o.label })));
-
-      // Branch: filter to US cities
-      const { filtered: brFiltered /*, rejected*/ } = filterToUSCities(brOptions);
+      const { filtered: brFiltered } = filterToUSCities(brOptions);
       populateSelectWithPairs(els.branch, brFiltered.map(o => ({ value: o.id, label: o.label })));
 
-      // Needed By & Reason (from current Fill-In view)
       const { neededBy, reason } = await service.fetchDropdowns({
         branchField: "___ignore_branch___",
         fieldMgrField: "___ignore_fm___",
@@ -265,7 +259,7 @@ function toNumberLoose(val) {
       const opt = document.createElement("option");
       opt.value = value;
       opt.textContent = label || value;
-      opt.dataset.nonCity = "true"; // marked as injected (not from filtered list)
+      opt.dataset.nonCity = "true";
       selectEl.appendChild(opt);
     }
     selectEl.value = value;
@@ -280,7 +274,6 @@ function toNumberLoose(val) {
         const label = map.idToLabel.get(id);
         const fallbackId = label ? map.labelToId.get(label) : null;
         if (fallbackId) selectEl.value = fallbackId;
-        // If still missing (likely filtered out), optionally inject it
         if (ensureIfMissing && !selectEl.value) {
           const lab = label || `(ID ${id})`;
           ensureOption(selectEl, id, lab);
@@ -292,7 +285,6 @@ function toNumberLoose(val) {
         selectEl.value = id;
         if (!selectEl.value && ensureIfMissing) ensureOption(selectEl, id, rawVal.trim());
       } else if (ensureIfMissing) {
-        // Label known but no ID mapping—inject as best-effort
         ensureOption(selectEl, rawVal.trim(), rawVal.trim());
       }
     }
@@ -306,7 +298,6 @@ function toNumberLoose(val) {
       const f = rec?.fields || {};
 
       if (nonEmpty(f["Customer Name"])) els.customerName.value = f["Customer Name"];
-      // For Branch/Field Manager, ensure current value appears even if filtered out
       setSelectFromLinked(els.branch,    f["Branch"],        maps.branch,   { ensureIfMissing: true });
       setSelectFromLinked(els.fieldMgr,  f["Field Manager"], maps.fieldMgr, { ensureIfMissing: true });
 
@@ -342,7 +333,7 @@ function toNumberLoose(val) {
     } catch { els.banner && (els.banner.style.display = "none"); }
   }
 
-  // ---------- LABOR RENDER / ADD / EDIT / REMOVE (NEW) ----------
+  // ---------- LABOR RENDER / ADD / EDIT / REMOVE ----------
   function ensureLaborRowsContainer() {
     const host = $("#labor-list");
     if (!host) return null;
@@ -360,104 +351,106 @@ function toNumberLoose(val) {
   }
 
   function renderLaborList(state) {
-  const rowsHost = ensureLaborRowsContainer();
-  if (!rowsHost) return;
+    const rowsHost = ensureLaborRowsContainer();
+    if (!rowsHost) return;
 
-  const labor = Array.isArray(state?.labor) ? state.labor : [];
-  if (!labor.length) {
-    rowsHost.innerHTML = `<div class="muted-sm" style="opacity:.8;">No labor lines yet. Click “+ Add Labor Line”.</div>`;
-    return;
-  }
-
-  const html = labor.map(l => {
-    const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
-    const rate = Math.max(0, Number(l.rate) || 0);
-    const pct  = Math.max(0, Number(l.marginPct) || 0);
-    const line = qty * rate * (1 + pct / 100);
-
-    return `
-      <div class="card" data-labor-id="${l.id}" style="padding:10px;border:1px solid rgba(0,0,0,.08);border-radius:10px;">
-        <div class="grid" style="grid-template-columns: 2fr 1fr 1fr 1fr auto; gap:8px;">
-          <div class="field">
-            <label class="field-label">Description</label>
-            <input type="text" class="labor-desc" value="${(l.desc ?? "Labor")}" />
-          </div>
-          <div class="field">
-            <label class="field-label">Qty</label>
-            <input type="number" class="labor-qty" min="0" step="1" value="${qty}" />
-          </div>
-          <div class="field">
-            <label class="field-label">Rate</label>
-            <input type="number" class="labor-rate" min="0" step="1" value="${rate}" />
-          </div>
-          <div class="field">
-            <label class="field-label">Margin (%)</label>
-            <input type="number" class="labor-margin" min="0" step="1" value="${pct}" />
-          </div>
-          <div class="field">
-            <label class="field-label">Line Total</label>
-            <div class="money" data-labor-cell="lineTotal">${formatMoney(line)}</div>
-          </div>
-        </div>
-        <div class="right" style="margin-top:8px;">
-          <button class="btn danger remove-labor">Remove</button>
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  rowsHost.innerHTML = html;
-
-  // Events for each card (keep recalcAndSave INSIDE this closure so qtyEl/rateEl/margEl are in scope)
-  rowsHost.querySelectorAll(".card[data-labor-id]").forEach(card => {
-    const id     = card.getAttribute("data-labor-id");
-    const descEl = card.querySelector(".labor-desc");
-    const qtyEl  = card.querySelector(".labor-qty");
-    const rateEl = card.querySelector(".labor-rate");
-    const margEl = card.querySelector(".labor-margin");
-    const lineBox = card.querySelector('[data-labor-cell="lineTotal"]');
-
-    function recalcAndSave() {
-      const data = getSaved();
-      const row  = (data.labor || []).find(x => x.id === id);
-      if (!row) return;
-
-      // Forgiving parsing (“$45”, “30%”, “  12  ” all work)
-      const qty  = Math.max(0, Math.floor(toNumberLoose(qtyEl.value)));
-      const rate = Math.max(0, toNumberLoose(rateEl.value));
-      const pct  = Math.max(0, toNumberLoose(margEl.value));
-
-      row.desc = String(descEl.value || "Labor");
-      row.qty = qty;
-      row.rate = rate;
-      row.marginPct = pct;
-
-      setSaved(data);
-
-      // Update this row’s total quickly
-      const line = qty * rate * (1 + pct / 100);
-      lineBox.textContent = formatMoney(line);
-
-      // Refresh footer totals (products + labor)
-      updateTotalsOnly(data);
+    const labor = Array.isArray(state?.labor) ? state.labor : [];
+    if (!labor.length) {
+      rowsHost.innerHTML = `<div class="muted-sm" style="opacity:.8;">No labor lines yet. Click “+ Add Labor Line”.</div>`;
+      return;
     }
 
-    descEl.addEventListener("input", recalcAndSave);
-    qtyEl.addEventListener("input", recalcAndSave);
-    rateEl.addEventListener("input", recalcAndSave);
-    margEl.addEventListener("input", recalcAndSave);
+    const html = labor.map(l => {
+      const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
+      const rate = Math.max(0, Number(l.rate) || 0);
+      const pct  = Math.max(0, Number(l.marginPct) || 0);
+      const line = qty * rate * (1 + pct / 100);
 
-    const removeBtn = card.querySelector(".remove-labor");
-    removeBtn.addEventListener("click", () => {
-      const data = getSaved();
-      data.labor = (data.labor || []).filter(x => x.id !== id);
-      setSaved(data);
-      renderLaborList(data);
-      updateTotalsOnly(data);
-      showToast?.("Labor line removed");
+      return `
+        <div class="card" data-labor-id="${l.id}" style="padding:10px;border:1px solid rgba(0,0,0,.08);border-radius:10px;">
+          <div class="grid" style="grid-template-columns: 2fr 1fr 1fr 1fr auto; gap:8px;">
+            <div class="field">
+              <label class="field-label">Description</label>
+              <input type="text" class="labor-desc" value="${(l.desc ?? "Labor")}" />
+            </div>
+            <div class="field">
+              <label class="field-label">Qty</label>
+              <input type="number" class="labor-qty" min="0" step="1" value="${qty}" />
+            </div>
+            <div class="field">
+              <label class="field-label">Rate</label>
+              <input type="number" class="labor-rate" min="0" step="1" value="${rate}" />
+            </div>
+            <div class="field">
+              <label class="field-label">Margin (%)</label>
+              <input type="number" class="labor-margin" min="0" step="1" value="${pct}" />
+            </div>
+            <div class="field">
+              <label class="field-label">Line Total</label>
+              <div class="money" data-labor-cell="lineTotal">${formatMoney(line)}</div>
+            </div>
+          </div>
+          <div class="right" style="margin-top:8px;">
+            <button class="btn danger remove-labor">Remove</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    rowsHost.innerHTML = html;
+
+    // Per-card inputs recalc
+    rowsHost.querySelectorAll(".card[data-labor-id]").forEach(card => {
+      const id     = card.getAttribute("data-labor-id");
+      const descEl = card.querySelector(".labor-desc");
+      const qtyEl  = card.querySelector(".labor-qty");
+      const rateEl = card.querySelector(".labor-rate");
+      const margEl = card.querySelector(".labor-margin");
+      const lineBox = card.querySelector('[data-labor-cell="lineTotal"]');
+
+      function recalcAndSave() {
+        const data = getSaved();
+        const row  = (data.labor || []).find(x => x.id === id);
+        if (!row) return;
+        const qty  = Math.max(0, Math.floor(toNumberLoose(qtyEl.value)));
+        const rate = Math.max(0, toNumberLoose(rateEl.value));
+        const pct  = Math.max(0, toNumberLoose(margEl.value));
+
+        row.desc = String(descEl.value || "Labor");
+        row.qty = qty;
+        row.rate = rate;
+        row.marginPct = pct;
+
+        setSaved(data);
+        const line = qty * rate * (1 + pct / 100);
+        lineBox.textContent = formatMoney(line);
+        updateTotalsOnly(data);
+      }
+
+      descEl.addEventListener("input", recalcAndSave);
+      qtyEl.addEventListener("input", recalcAndSave);
+      rateEl.addEventListener("input", recalcAndSave);
+      margEl.addEventListener("input", recalcAndSave);
     });
-  });
-}
+
+    // Robust delegated remove (works across re-renders)
+    if (!rowsHost._removeBound) {
+      rowsHost.addEventListener("click", (ev) => {
+        const btn = ev.target.closest(".remove-labor");
+        if (!btn) return;
+        const card = btn.closest(".card[data-labor-id]");
+        const id = card ? card.getAttribute("data-labor-id") : null;
+        if (!id) return;
+        const data = getSaved();
+        data.labor = (data.labor || []).filter(x => x.id !== id);
+        setSaved(data);
+        renderLaborList(data);
+        updateTotalsOnly(data);
+        showToast?.("Labor line removed");
+      });
+      rowsHost._removeBound = true;
+    }
+  }
 
   function addLaborLine(defaults = {}) {
     const data = getSaved();
@@ -485,13 +478,10 @@ function toNumberLoose(val) {
     const items = Array.isArray(state?.cart) ? state.cart : [];
     const rows = [];
 
-    let productsTotal = 0;
-
     for (const saved of items) {
       const unit = itemUnitSell(saved);
       const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
       const line = unit * qty;
-      productsTotal += line;
 
       rows.push(`
         <tr data-key="${(saved.key || "")}">
@@ -503,12 +493,6 @@ function toNumberLoose(val) {
               <label class="field-label">QTY</label>
               <input type="number" class="cart-qty" min="0" step="1"
                      value="${qty}" data-key="${(saved.key || "")}">
-              <div class="margin-override">
-                <label class="field-label">Margin (%)</label>
-                <input type="number" class="cart-margin-pct" min="0" step="1"
-                       value="${Math.max(0, Number(saved.marginPct ?? 30) || 0)}"
-                       data-key="${(saved.key || "")}">
-              </div>
             </div>
           </td>
           <td data-label="Unit" data-cell="unit"><span class="cell-text nowrap-ellipsize">${formatMoney(unit)}</span></td>
@@ -526,23 +510,16 @@ function toNumberLoose(val) {
     // Footer totals
     updateTotalsOnly(state);
 
-    // Inline edits update storage + totals
+    // Inline qty edits update storage + totals
     tbody.oninput = (ev) => {
       const qtyEl = ev.target.closest(".cart-qty");
-      const pctEl = ev.target.closest(".cart-margin-pct");
-      if (!qtyEl && !pctEl) return;
-
-      const key = (qtyEl || pctEl).getAttribute("data-key");
+      if (!qtyEl) return;
+      const key = qtyEl.getAttribute("data-key");
       const data = getSaved();
       const item = data.cart.find(c => c.key === key);
       if (!item) return;
 
-      if (qtyEl) item.qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
-      if (pctEl) {
-        let pct = Number(pctEl.value);
-        if (!Number.isFinite(pct)) pct = 30;
-        item.marginPct = Math.max(0, pct);
-      }
+      item.qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
       setSaved(data);            // persist + broadcast
       renderSavedCart(data);     // re-render row + totals + labor list
     };
@@ -556,39 +533,39 @@ function toNumberLoose(val) {
     };
   }
 
-function updateTotalsOnly(state) {
-  const products = Array.isArray(state?.cart) ? state.cart : [];
-  const labor    = Array.isArray(state?.labor) ? state.labor : [];
+  function updateTotalsOnly(state) {
+    const products = Array.isArray(state?.cart) ? state.cart : [];
+    const labor    = Array.isArray(state?.labor) ? state.labor : [];
 
-  const productsTotal = products.reduce((sum, saved) => {
-    const unit = itemUnitSell(saved);
-    const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
-    return sum + unit * qty;
-  }, 0);
+    const marginPct = getGlobalMarginPct();
+    const productsTotal = products.reduce((sum, saved) => {
+      const base = Number(saved.unitBase) || 0;
+      const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
+      const unitSell = base * (1 + marginPct / 100);
+      return sum + unitSell * qty;
+    }, 0);
 
-  // Use the same forgiving parser the inputs use
-  const laborTotal = labor.reduce((sum, l) => {
-    const qty  = Math.max(0, Math.floor(toNumberLoose(l.qty)));
-    const rate = Math.max(0, toNumberLoose(l.rate));
-    const pct  = Math.max(0, toNumberLoose(l.marginPct));
-    return sum + qty * rate * (1 + pct / 100);
-  }, 0);
+    const laborTotal = labor.reduce((sum, l) => {
+      const qty  = Math.max(0, Math.floor(toNumberLoose(l.qty)));
+      const rate = Math.max(0, toNumberLoose(l.rate));
+      const pct  = Math.max(0, toNumberLoose(l.marginPct));
+      return sum + qty * rate * (1 + pct / 100);
+    }, 0);
 
-  $("#productTotal").textContent = formatMoney(productsTotal);
-  $("#laborTotal").textContent   = formatMoney(laborTotal);
-  $("#grandTotal").textContent   = formatMoney(productsTotal + laborTotal);
-}
+    $("#productTotal").textContent = formatMoney(productsTotal);
+    $("#laborTotal").textContent   = formatMoney(laborTotal);
+    $("#grandTotal").textContent   = formatMoney(productsTotal + laborTotal);
+  }
 
-
-  // Dedicated remove function (requested)
+  // Dedicated remove function
   function removeItemFromCart(key) {
     if (!key) return;
     const data = getSaved();
     const beforeLen = data.cart.length;
     data.cart = data.cart.filter(c => c.key !== key);
     if (data.cart.length !== beforeLen) {
-      setSaved(data);                    // persist + broadcast
-      renderSavedCart(data);             // refresh UI + totals + labor
+      setSaved(data);
+      renderSavedCart(data);
       showToast?.("Removed from cart");
     }
   }
@@ -600,8 +577,8 @@ function updateTotalsOnly(state) {
     btn.addEventListener("click", () => {
       const data = getSaved();
       data.cart = [];
-      data.labor = [];                   // NEW: clear labor too
-      setSaved(data);                    // persist + broadcast
+      data.labor = [];
+      setSaved(data);
       renderSavedCart(data);
       showToast?.("Cart cleared");
     }, { passive: true });
@@ -614,10 +591,33 @@ function updateTotalsOnly(state) {
     btn.addEventListener("click", () => addLaborLine(), { passive: true });
   }
 
+  function wireGlobalMargin() {
+    const input = $("#globalMarginPct");
+    if (!input || input._bound) return;
+    input._bound = true;
+
+    // Initialize from storage or default 30
+    const curr = getGlobalMarginPct();
+    input.value = String(curr);
+
+    input.addEventListener("input", () => {
+      const pct = Math.max(0, Math.floor(Number(input.value) || 0));
+      setGlobalMarginPct(pct);
+      // Re-render materials area to update Unit/Line columns
+      const state = getSaved();
+      renderSavedCart(state);
+    });
+  }
+
   // ---------- Init ----------
   document.addEventListener("DOMContentLoaded", async () => {
     // Show/hide API key banner
     updateBannerVisibility();
+
+    // Default global margin if not set
+    if (localStorage.getItem(GLOBAL_MARGIN_KEY) == null) {
+      setGlobalMarginPct(30);
+    }
 
     // Airtable init
     let service;
@@ -631,14 +631,15 @@ function updateTotalsOnly(state) {
       await prefillIfRecord(service, recId);
       els.btnSave?.addEventListener("click", async () => {
         try {
-          const newId = await saveToAirtable(service, recId);
+          await saveToAirtable(service, recId);
         } catch { /* handled above */ }
       });
     }
 
     // Cart wiring
     wireClearAll();
-    wireAddLabor(); // NEW: enable + Add Labor Line
+    wireAddLabor();
+    wireGlobalMargin();
 
     const state = getSaved();
     renderSavedCart(state);
@@ -647,7 +648,6 @@ function updateTotalsOnly(state) {
     if (bc) {
       bc.onmessage = (ev) => {
         if (ev?.data?.type === "cartUpdate") {
-          // Re-read from storage for safety and re-render
           const fresh = getSaved();
           renderSavedCart(fresh);
         }

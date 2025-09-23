@@ -31,11 +31,19 @@
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }
     .field { display: flex; flex-direction: column; gap: 6px; }
-    .field input[type="text"], .field input[type="date"], .field select, .field textarea { padding: 10px; border: 1px solid var(--border, #ddd); border-radius: 10px; font-size: 14px; width: 100%; box-sizing: border-box; background: var(--card, #fff); color: inherit; }
+    .field input[type="text"], .field input[type="date"], .field select, .field textarea, .field input[type="number"] { padding: 10px; border: 1px solid var(--border, #ddd); border-radius: 10px; font-size: 14px; width: 100%; box-sizing: border-box; background: var(--card, #fff); color: inherit; }
     .field textarea { min-height: 80px; resize: vertical; }
     .right { display:flex; justify-content:flex-end; gap:10px; align-items:center; }
     .pill { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; font-size:12px; background:rgba(0,0,0,.04); }
     #airtableBanner { display:none; margin-bottom:10px; padding:10px; border-radius:8px; background:#fff2cc; border:1px solid #ffe58f; color:#7a5a00; }
+
+    /* Totals layout */
+    #totals { display:grid; grid-template-columns: 1fr auto; gap:8px 16px; align-items:center; }
+    #totals .label { justify-self:end; font-weight: 500; }
+    #totals .value { justify-self:end; }
+    #totals .grand { font-size: 1.1rem; font-weight: 700; }
+    #globalMarginWrap { display:flex; justify-content:flex-end; margin: 8px 0 12px; }
+    #globalMarginWrap .field { max-width: 200px; }
   </style>
 </head>
 <body>
@@ -103,11 +111,6 @@
           <input id="elevation" type="text" placeholder="Elevation" />
         </div>
 
-    <!--    <div class="field">
-          <label class="field-label" for="materialsNeeded">Materials Needed</label>
-          <textarea id="materialsNeeded" placeholder="materials"></textarea>
-        </div> -->
-
         <div class="field">
           <label class="field-label" for="reasonSelect">Reason For Fill In</label>
           <select id="reasonSelect"><option value="">—</option></select>
@@ -129,7 +132,7 @@
     <section id="cart-section" class="card" aria-labelledby="cartTitle">
       <header class="stack" style="margin-bottom: 8px;">
         <strong id="cartTitle">Selected SKUs</strong>
-        <p class="cart-note muted-sm">Review quantities and margins before export.</p>
+        <p class="cart-note muted-sm">Review quantities and margin before export. One margin applies to all materials.</p>
       </header>
 
       <table id="cart-table">
@@ -139,7 +142,7 @@
             <th>SKU</th>
             <th>Description</th>
             <th>Qty</th>
-            <th>Unit (Sell +Margin%)</th>
+            <th>Unit (Sell)</th>
             <th>Line Total</th>
             <th></th>
           </tr>
@@ -147,6 +150,7 @@
         <tbody><!-- rows injected by cart.js --></tbody>
       </table>
 
+      <!-- Labor -->
       <div id="labor-list">
         <div class="labor-head" style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px;">
           <strong>Labor</strong>
@@ -155,6 +159,14 @@
       </div>
 
       <div class="sep"></div>
+
+      <!-- Global margin control (applies to all material lines) -->
+      <div id="globalMarginWrap">
+        <div class="field">
+          <label class="field-label" for="globalMarginPct">Material Margin (%)</label>
+          <input id="globalMarginPct" type="number" min="0" step="1" value="30" />
+        </div>
+      </div>
 
       <div id="totals" aria-live="polite" aria-atomic="true">
         <div class="label">Products Total:</div><div class="value" id="productTotal">$0.00</div>
