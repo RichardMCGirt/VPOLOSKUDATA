@@ -1,7 +1,216 @@
-// === Record Count Verification ==============================================
-const EXPECTED_ROW_COUNT = Number(localStorage.getItem('EXPECTED_ROW_COUNT') || 12709);
-// Example inside your chunking loop:
+// ---- Rate limit globals (must exist before __rateLimitGate) ----
+const RL_MAX_PER_MIN = 60;       // tune to your quota
+const RL_INTERVAL_MS = 60_000;   // sliding 1-minute window
+let __rl_timestamps = [];        // timestamps of recent calls
 
+// ---- Loading overlay / quiescence globals (safe defaults) ----
+let __INFLIGHT = 0;              // active network calls
+let __ROWS_DONE = false;         // set true when pager detects end-of-data
+let __OVERLAY_SHOWN_AT = 0;      // timestamp when overlay was shown
+let __OVERLAY_HIDDEN = false;    // guard to prevent double-hide
+let __LAST_ACTIVITY_TS = 0;      // last time we touched data from network
+
+const OVERLAY_MIN_MS  = 1200;    // keep overlay visible at least this long
+const QUIET_WINDOW_MS = 800;     // must be quiet this long before hiding
+
+// ---- Expected row count (resilient default) ----
+let EXPECTED_ROW_COUNT = 0;
+
+function setExpectedRowCount(n){
+  try {
+    EXPECTED_ROW_COUNT = Math.max(0, Number(n) || 0);
+    localStorage.setItem('EXPECTED_ROW_COUNT', String(EXPECTED_ROW_COUNT));
+  } catch {}
+}
+
+function getExpectedRowCount(){
+  if (EXPECTED_ROW_COUNT > 0) return EXPECTED_ROW_COUNT;
+  try {
+    const fromLS = Number(localStorage.getItem('EXPECTED_ROW_COUNT')) || 0;
+    if (fromLS > 0) EXPECTED_ROW_COUNT = fromLS;
+  } catch {}
+  return EXPECTED_ROW_COUNT || 0;
+}
+
+async function __rateLimitGate(){
+  while (true){
+    const now = Date.now();
+    __rl_timestamps = __rl_timestamps.filter(t => now - t < RL_INTERVAL_MS);
+    if (__rl_timestamps.length < RL_MAX_PER_MIN){
+      __rl_timestamps.push(now);
+      return;
+    }
+    const waitMs = (RL_INTERVAL_MS - (now - __rl_timestamps[0])) + Math.floor(Math.random() * 250);
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+}
+(function(){
+  function $(id){ return document.getElementById(id); }
+  function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
+  let __maxPct = 0;
+
+  function setBar(pct){
+    const bar = $("loadingBar");
+    if (bar) bar.style.width = clamp(pct|0, 0, 100) + "%";
+  }
+  function setLabel(label){
+    const lbl = $("loadingBarLabel");
+    if (lbl && label != null) lbl.textContent = String(label);
+    const meta = $("loadingBarMeta");
+    if (meta && label != null) meta.textContent = String(label);
+  }
+  function setOverlayVisible(show){
+    const ov = $("loadingBarOverlay"); // 
+    if (!ov) return;
+    ov.style.display = show ? "flex" : "none";
+    try { document.body.style.overflow = show ? "hidden" : ""; } catch {}
+  }
+
+// Wherever showLoadingBar is defined
+window.showLoadingBar = function(show, label=""){
+  const ov = document.getElementById("loadingBarOverlay");
+  if (!ov) return;
+  ov.style.display = show ? "flex" : "none";
+  try { document.body.style.overflow = show ? "hidden" : ""; } catch {}
+
+  if (show){
+    __OVERLAY_SHOWN_AT = Date.now();
+    __OVERLAY_HIDDEN   = false;
+    __LAST_ACTIVITY_TS = Date.now();
+    // small starting bump so users see movement
+    try { setLoadingBar(5, label || "Starting…"); } catch {}
+  }
+};
+
+
+  window.setLoadingBar = function(percent = 0, label){
+    if (label != null) setLabel(label);
+    __maxPct = clamp(percent|0, 0, 100);
+    setBar(__maxPct);
+  };
+
+  window.bumpLoadingTo = function(percent = 0, label){
+    __maxPct = Math.max(__maxPct, clamp(percent|0, 0, 100));
+    if (label != null) setLabel(label);
+    setBar(__maxPct);
+  };
+})();
+
+// ===== Loading overlay quiescence gate =====
+// ============================
+// 429-aware fetch wrapper
+// ============================
+
+// ---- Quiescence + overlay hooks (no-ops if you don't have them yet)
+
+
+function __noteActivity(){ __LAST_ACTIVITY_TS = Date.now(); }
+
+function __maybeHideOverlay(reason = ""){
+  // Only hide when: paging is marked done, no network in flight, quiet for a bit, and min show time elapsed
+  const now = Date.now();
+  const minShown = (now - __OVERLAY_SHOWN_AT) >= OVERLAY_MIN_MS;
+  const quiet    = (now - __LAST_ACTIVITY_TS) >= QUIET_WINDOW_MS;
+
+  if (!__ROWS_DONE) return;
+  if (__INFLIGHT > 0) return;
+  if (!quiet) return;
+  if (!minShown) { setTimeout(() => __maybeHideOverlay("min-delay"), OVERLAY_MIN_MS - (now - __OVERLAY_SHOWN_AT)); return; }
+  if (__OVERLAY_HIDDEN) return;
+
+  __OVERLAY_HIDDEN = true;
+  try { if (typeof bumpLoadingTo === "function") bumpLoadingTo(100, "All records loaded"); } catch {}
+  try { if (typeof showLoadingBar === "function") showLoadingBar(false); } catch {}
+  try { if (typeof setControlsEnabledState === "function") setControlsEnabledState(); } catch {}
+  // console.debug("[loading] overlay hidden", reason);
+}
+
+// ---- Local, conservative client-side rate limiting (helps avoid 429 bursts)
+
+
+
+// ---- Small helpers
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function parseBody(res){
+  const ct = res.headers.get("content-type") || "";
+  // Prefer JSON if present; fall back to text
+  if (ct.includes("application/json")) {
+    try { return await res.json(); } catch { /* fallthrough */ }
+  }
+  const txt = await res.text();
+  try { return JSON.parse(txt); } catch { return txt; }
+}
+
+// ---- Main: robust fetch with backoff, jitter, Retry-After, and quiescence hooks
+async function fetchJSON429(url, init = {}){
+  const MAX_ATTEMPTS   = 6;              // overall retries
+  const BASE_DELAY_MS  = 300;            // base backoff
+  const JITTER_MS      = 250;            // extra random wait
+  let lastErr;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++){
+    await __rateLimitGate();
+    __INFLIGHT++;
+    try {
+      const res = await fetch(url, init);
+      __noteActivity(); // we got a response at least
+
+      // Handle retryable statuses
+      if (res.status === 429 || res.status === 503) {
+        // Honor server's Retry-After if present
+        const retryAfter = res.headers.get("Retry-After");
+        let waitMs;
+        if (retryAfter) {
+          // Retry-After can be seconds or HTTP-date; we handle simple seconds form
+          const secs = Number(retryAfter);
+          waitMs = isFinite(secs) ? secs * 1000 : BASE_DELAY_MS * (2 ** attempt);
+        } else {
+          waitMs = BASE_DELAY_MS * (2 ** attempt);
+        }
+        waitMs += Math.floor(Math.random() * JITTER_MS);
+        // Optional: log
+        // console.warn(`[fetchJSON429] ${res.status} retry in ${waitMs}ms (attempt ${attempt+1}/${MAX_ATTEMPTS})`, url);
+        await sleep(waitMs);
+        continue;
+      }
+
+      // Retry some transient 5xx errors too
+      if (res.status >= 500 && res.status < 600) {
+        const waitMs = BASE_DELAY_MS * (2 ** attempt) + Math.floor(Math.random() * JITTER_MS);
+        await sleep(waitMs);
+        continue;
+      }
+
+      // Non-OK and non-retryable: throw with body text for debugging
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const err  = new Error(`HTTP ${res.status} ${res.statusText} at ${url}\n${body}`);
+        err.status = res.status;
+        throw err;
+      }
+
+      // OK response
+      const data = await parseBody(res);
+      __noteActivity();
+      return data;
+
+    } catch (e) {
+      lastErr = e;
+      // Network errors or thrown above: backoff and retry
+      const waitMs = BASE_DELAY_MS * (2 ** attempt) + Math.floor(Math.random() * JITTER_MS);
+      // console.warn(`[fetchJSON429] error: ${e?.message || e}. retrying in ${waitMs}ms (${attempt+1}/${MAX_ATTEMPTS})`);
+      await sleep(waitMs);
+    } finally {
+      __INFLIGHT--;
+      // Let the quiescence gate check if we're done
+      setTimeout(__maybeHideOverlay, 0);
+    }
+  }
+
+  // Exhausted attempts
+  throw lastErr || new Error(`fetchJSON429 exhausted retries for ${url}`);
+}
 
 function setExpectedRowCount(n){
   try { localStorage.setItem('EXPECTED_ROW_COUNT', String(n)); }
@@ -16,69 +225,68 @@ function setControlsEnabledState(){
   setDisabled("clearFilters", !ready);
 }
 
+// globals near the top of database.js
+
+
 function verifyRecordCount(){
   try {
-    const expected = EXPECTED_ROW_COUNT || 0;
-    const actual = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
-    const ok = expected ? (actual === expected) : true;
-    // (keep your existing lines above)
+const expected = Number(getExpectedRowCount()) || 0;
+    const actual   = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
 
-// NEW: reflect real progress while pages stream in
-try {
-  if (expected > 0) {
-    const pct = Math.max(0, Math.min(100, Math.floor((actual / expected) * 100)));
-    if (!ok) bumpLoadingTo(Math.max(40, pct), `Loading ${actual} / ${expected}…`);
-    else bumpLoadingTo(100, "All records loaded");
-  }
-} catch (_) {}
-// (keep your existing console.log and status pill updates below)
+    // progress while paging
+    try {
+      if (expected > 0) {
+        const pct = Math.max(0, Math.min(100, Math.floor((actual / expected) * 100)));
+        bumpLoadingTo(Math.max(40, pct), `Loading ${actual} / ${expected}…`);
+      }
+    } catch {}
 
-   if (ok) { try { FULLY_LOADED = true; setControlsEnabledState(); } catch(_){} }
+    // ✅ only "ok" when we know the target, reached it (or exceeded), AND paging is done
+    const ok = (expected > 0) && (actual >= expected) && (__ROWS_DONE === true);
+
+    if (ok && !__LOADING_HID_ONCE) {
+      __LOADING_HID_ONCE = true;
+      bumpLoadingTo(100, "All records loaded");
+      try { FULLY_LOADED = true; setControlsEnabledState?.(); } catch {}
+    }
+
     console.log("[verifyRecordCount]", { expected, actual, ok });
 
-    // Update status pill if available
+    // status pill
     if (typeof updateDataStatus === "function"){
       const msg = expected ? `Loaded ${actual}${ok ? " ✓" : ` / ${expected}`}` : `Loaded ${actual}`;
       updateDataStatus(ok ? "fresh" : "warn", msg);
     }
 
-    // Update badge
+    // badge
     const badge = document.getElementById("fetch-count");
     if (badge){
       badge.textContent = expected ? `${actual} / ${expected}` : String(actual);
       if (ok) { badge.classList.add("ok"); badge.classList.remove("warn"); }
-      else { badge.classList.add("warn"); badge.classList.remove("ok"); }
+      else    { badge.classList.add("warn"); badge.classList.remove("ok"); }
     }
     return { expected, actual, ok };
+
   } catch (e){
     console.warn("[verifyRecordCount] failed", e);
-    return { expected: EXPECTED_ROW_COUNT || 0, actual: 0, ok: false };
+    return { expected: Number(EXPECTED_ROW_COUNT) || 0, actual: 0, ok: false };
   }
 }
+
+
 
 // Expose for console checking
 window.setExpectedRowCount = setExpectedRowCount;
 window.verifyRecordCount = verifyRecordCount;
 
 // ===== 429-aware fetch + rate limit gate (Sheets) ============================
-const RL_MAX_PER_MIN = 30;             // Adjust if your quota allows
-const RL_INTERVAL_MS = 60_000;
-let __rl_timestamps = [];
 
-/** Blocks until a slot is available under the per-minute cap. */
-async function __rateLimitGate(){
-  while (true){
-    const now = Date.now();
-    __rl_timestamps = __rl_timestamps.filter(t => now - t < RL_INTERVAL_MS);
-    if (__rl_timestamps.length < RL_MAX_PER_MIN){
-      __rl_timestamps.push(now);
-      return;
-    }
-    const waitMs = (RL_INTERVAL_MS - (now - __rl_timestamps[0])) + Math.floor(Math.random()*250);
-    await new Promise(r => setTimeout(r, waitMs));
-  }
-}
-// ========== Search v2 helpers (tokenized + field-aware) ==========
+const hideLoadingOnce = (() => {
+  let done = false;
+  return () => { if (done) return; done = true; showLoadingBar(false); };
+})();
+
+
 
 // Normalize helpers
 function normTxt(s){ return String(s || "").toLowerCase(); }
@@ -377,18 +585,7 @@ async function withRetry(fn, attempts = 3, baseDelayMs = 200){
 
 // === Rate limiting & 429-aware backoff (added) ===
 
-async function __rateLimitGate(){
-  while (true){
-    const now = Date.now();
-    __rl_timestamps = __rl_timestamps.filter(t => now - t < RL_INTERVAL_MS);
-    if (__rl_timestamps.length < RL_MAX_PER_MIN){
-      __rl_timestamps.push(now);
-      return;
-    }
-    const waitMs = (RL_INTERVAL_MS - (now - __rl_timestamps[0])) + Math.floor(Math.random()*250);
-    await new Promise(r => setTimeout(r, waitMs));
-  }
-}
+
 async function withBackoff429(fn, attempts=5){
   let lastErr;
   for (let i=0;i<attempts;i++){
@@ -471,6 +668,7 @@ let _pageCursor = 0;             // 0-based page index
 let _pageTitle = null;           // resolved sheet title
 let _isLoadingPage = false;
 let _noMorePages = false;
+let __LOADING_HID_ONCE = false;   
 // ===== GOOGLE SHEETS + GIS SIGN-IN (popup token flow) =====
 
 // --- Config ---
@@ -724,7 +922,7 @@ function gisLoaded() {
   } catch (e) {
     console.warn("GIS init skipped or failed:", e);
   } finally {
-    // Wire any buttons that depend on GIS being present
+// Wire any buttons that depend on GIS being present
     maybeEnableButtons && maybeEnableButtons();
   }
 }
@@ -743,6 +941,9 @@ function categorizeDescription(desc = "") {
 
 // =============== Bootstrap GAPI (Sheets v4) ===============
 function gapiLoaded() {
+  try{showLoadingBar(true,"Initializing…");}catch{} try{bumpLoadingTo(10,"Connecting to Sheets API…");}catch{} try { showLoadingBar(true, "Initializing…"); } catch {}
+  try { bumpLoadingTo(10, "Connecting to Sheets API…"); } catch {}
+
   gapi.load("client", async () => {
     await gapi.client.init({
       apiKey: API_KEY,
@@ -759,7 +960,9 @@ function gapiLoaded() {
       // If you need header/meta first, you could bump to ~25% here.
 
       bumpLoadingTo(25, "Fetching product data…");
-      await listSheetData();                       // your existing call
+      bumpLoadingTo(25, "Fetching product data…");
+      bumpLoadingTo(25,"Fetching product data…"); await listSheetData(); bumpLoadingTo(85,"Finalizing table…");
+      bumpLoadingTo(85, "Finalizing table…");                       // your existing call
 
       // When listSheetData returns, we likely transformed rows.
       bumpLoadingTo(85, "Finalizing table…");
@@ -768,8 +971,7 @@ function gapiLoaded() {
       console.error("Error loading sheet (no-login mode):", e);
       showToast("Error loading sheet (see console).");
     } finally {
-      bumpLoadingTo(100, "Ready");
-      setTimeout(() => showLoadingBar(false), 350);  // small delay for nice finish
+
     }
 
     showEl("authorize_button", false);
@@ -805,7 +1007,7 @@ async function updateAllPricingFromSheet() {
     console.error("Update pricing failed:", e);
     showToast("Failed to update pricing. See console.");
   } finally {
-    showEl("loadingBarOverlay", false);
+showEl("loadingBarOverlay", false);
   }
 }
 
@@ -2115,10 +2317,13 @@ async function loadNextPage() {
     const windowRows = transformWindowRows(header, dataRows);
     dbg("[fetchRowsWindow] pageIdx:", _pageCursor, "pageSize:", VIRTUAL_PAGE_SIZE, "got:", windowRows.length);
 
-    if (!Array.isArray(windowRows) || windowRows.length === 0) {
-      _noMorePages = true;
-      return;
-    }
+if (!Array.isArray(windowRows) || windowRows.length === 0) {
+  _noMorePages = true;           // internal flag (you already had this)
+  __ROWS_DONE  = true;           // ✅ now we *know* there are no more
+  verifyRecordCount();           // tick progress one last time (will hide if counts match)
+  return;
+}
+
 
     // First page — initialize filters/UI and clear old rows
     if (_pageCursor === 0) {
@@ -2179,9 +2384,15 @@ async function loadNextPage() {
     }
 
     _pageCursor++;
+    // ✅ keep progress up-to-date each page
+if (_noMorePages) {
+  __ROWS_DONE = true;
+}
+verifyRecordCount();
+
 
   } finally {
-    if (typeof showEl === 'function') showEl('loadingBarOverlay', false);
+if (typeof showEl === 'function') showEl('loadingBarOverlay', false);
     _isLoadingPage = false;
   }
 }
@@ -2213,7 +2424,8 @@ function singleflight(key, fn){
   if (__singleflight.has(key)) return __singleflight.get(key);
   const p = (async () => {
     try { return await fn(); }
-    finally { __singleflight.delete(key); }
+    finally {     
+__singleflight.delete(key); }
   })();
   __singleflight.set(key, p);
   return p;
