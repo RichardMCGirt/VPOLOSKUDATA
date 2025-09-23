@@ -5,13 +5,21 @@ function setExpectedRowCount(n){
   try { localStorage.setItem('EXPECTED_ROW_COUNT', String(n)); }
   catch {}
 }
+function setControlsEnabledState(){
+  // Only enable after the full dataset is ready
+  const ready = !!FULLY_LOADED;
+  setDisabled("searchInput", !ready);
+  setDisabled("vendorFilter", !ready);
+  setDisabled("categoryFilter", !ready);
+  setDisabled("clearFilters", !ready);
+}
 
 function verifyRecordCount(){
   try {
     const expected = EXPECTED_ROW_COUNT || 0;
     const actual = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
     const ok = expected ? (actual === expected) : true;
-    if (ok) { try { FULLY_LOADED = true; } catch(_){} }
+   if (ok) { try { FULLY_LOADED = true; setControlsEnabledState(); } catch(_){} }
     console.log("[verifyRecordCount]", { expected, actual, ok });
 
     // Update status pill if available
@@ -524,10 +532,8 @@ function gapiLoaded() {
     // Authless: enable controls and load data immediately
     try {
       // Enable UI you previously disabled until sign-in
-      setDisabled("searchInput", false);
-      setDisabled("vendorFilter", false);
-      setDisabled("categoryFilter", false);
-      setDisabled("clearFilters", false);
+          setControlsEnabledState();
+
 
       showEl("table-container", false);
       showEl("loadingBarOverlay", true);
@@ -1493,6 +1499,7 @@ async function preloadAllPages() {
       if (BACKGROUND_PAGE_DELAY_MS) await sleep(BACKGROUND_PAGE_DELAY_MS);
     }
     FULLY_LOADED = true;
+    setControlsEnabledState();
     updateDataStatus && updateDataStatus("fresh", "Up to date • " + new Date().toLocaleTimeString());
   } catch (e) {
     console.error("[preloadAllPages] failed", e);
@@ -1556,10 +1563,7 @@ await loadNextPage();
   setTimeout(() => { loadNextPage().catch(() => {}); }, 0);
 
   // 4) Enable controls
-  setDisabled && setDisabled("searchInput", false);
-  setDisabled && setDisabled("vendorFilter", false);
-  setDisabled && setDisabled("categoryFilter", false);
-  setDisabled && setDisabled("clearFilters", false);
+setControlsEnabledState();
 
   if (typeof wireControlsOnce === "function") wireControlsOnce();
   if (typeof applyRestoreAfterDataLoad === "function") applyRestoreAfterDataLoad();
