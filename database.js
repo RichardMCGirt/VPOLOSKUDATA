@@ -864,11 +864,14 @@ const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTE
 
   // Compute only — do not touch DOM here
   const filtered = (ALL_ROWS || []).filter(r => {
-    const matchesVendor = !vSel || r.vendor === vSel;
-    const matchesCat    = !cSel || r.category === cSel;
-    const hay = `${r.sku} ${r.description}`.toLowerCase();
-    const matchesQuery = !q || hay.includes(q);
-    return matchesVendor && matchesCat && matchesQuery;
+const hasQuery     = !!q;
+const matchesVendor = hasQuery ? true : (!vSel || r.vendor === vSel);
+const matchesCat    = hasQuery ? true : (!cSel || r.category === cSel);
+// include vendor + uom in the searchable haystack too:
+const hay = `${r.sku} ${r.description} ${r.vendor} ${r.uom}`.toLowerCase();
+const matchesQuery  = !q || hay.includes(q);
+return matchesVendor && matchesCat && matchesQuery;
+
   });
 
   let arr = filtered.slice();
