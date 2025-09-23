@@ -236,7 +236,7 @@ let _ingestSeq = 0; // monotonically increasing id assigned to each row as it ar
 
 let _controlsWired = false;
 // --- Virtualization / paging config (mobile-first) ---
-const VIRTUAL_PAGE_SIZE = 600;   
+const VIRTUAL_PAGE_SIZE = 600;   // ~250 rows per window feels snappy on iPhone
 const VIRTUAL_PREFETCH = 1;      // prefetch next page proactively
 let _pageCursor = 0;             // 0-based page index
 let _pageTitle = null;           // resolved sheet title
@@ -840,7 +840,7 @@ function renderCategoryChips() {
     const sel = document.getElementById("categoryFilter");
     if (sel) sel.value = ACTIVE_CATEGORY;
     Array.from(wrap.querySelectorAll(".chip")).forEach(c => c.classList.toggle("active", c === chip));
-applyFilters({ render: false, sort: "stable" });
+    applyFilters();
   };
 }
 function applyFilters(opts = {}){
@@ -886,13 +886,11 @@ const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTE
 
   // Compute only — do not touch DOM here
   const filtered = (ALL_ROWS || []).filter(r => {
-   const hasQuery      = !!q;
-const matchesVendor = hasQuery ? true : (!vSel || r.vendor === vSel);
-const matchesCat    = hasQuery ? true : (!cSel || r.category === cSel);
-const hay = `${r.sku} ${r.description} ${r.vendor} ${r.uom}`.toLowerCase();
-const matchesQuery  = !q || hay.includes(q);
-return matchesVendor && matchesCat && matchesQuery;
-
+    const matchesVendor = !vSel || r.vendor === vSel;
+    const matchesCat    = !cSel || r.category === cSel;
+    const hay = `${r.sku} ${r.description}`.toLowerCase();
+    const matchesQuery = !q || hay.includes(q);
+    return matchesVendor && matchesCat && matchesQuery;
   });
 
   let arr = filtered.slice();
@@ -1832,7 +1830,6 @@ function showSkeletonRows(n=6){
 function removeSkeletonRows(){
   document.querySelectorAll('.row-skeleton').forEach(el=>el.remove());
 }
-const hadActive = hasAnyActiveFilter();
 
 async function loadNextPage() {
 
@@ -1843,56 +1840,50 @@ async function loadNextPage() {
   if (typeof showEl === 'function') showEl('loadingBarOverlay', true);
 
   try {
-    // Prefer a prefetched page if available
-    let header, dataRows;
-    if (typeof _prefetched === 'object' && _prefetched && _prefetched[_pageCursor]) {
-      ({ header, dataRows } = _prefetched[_pageCursor]);
-      try { delete _prefetched[_pageCursor]; } catch(_) {}
-    } else {
-      const resp = await withRetry(
-        () => fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor, VIRTUAL_PAGE_SIZE),
-        3,
-        200
-      );
-      ({ header, dataRows } = resp || {});
-    }
-
+    const resp = await withRetry(
+      () => fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor, VIRTUAL_PAGE_SIZE),
+      3,
+      200
+    );
+    const { header, dataRows } = resp;
     const windowRows = transformWindowRows(header, dataRows);
+
     dbg("[fetchRowsWindow] pageIdx:", _pageCursor, "pageSize:", VIRTUAL_PAGE_SIZE, "got:", windowRows.length);
 
-    if (!Array.isArray(windowRows) || windowRows.length === 0) {
+    if (windowRows.length === 0) {
       _noMorePages = true;
       return;
     }
 
-    // First page — initialize filters/UI and clear old rows
     if (_pageCursor === 0) {
+      // First page — initialize table and filters
       if (typeof buildCategories === 'function') buildCategories(windowRows);
       if (typeof populateVendorFilter === 'function') populateVendorFilter(windowRows);
       if (typeof populateCategoryFilter === 'function') populateCategoryFilter(windowRows);
       if (typeof renderCategoryChips === 'function') renderCategoryChips();
 
+      // Reset table body before first paint
       const table = document.getElementById('data-table') || ensureTable();
       const tbody = table.querySelector('tbody');
       if (tbody) tbody.innerHTML = '';
     }
 
-    // Append to master list
+    // Append to master list then (re)filter
     if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
     Array.prototype.push.apply(ALL_ROWS, windowRows);
 
-    // Keep cart prices in sync with latest rows (if cart exists)
+    // If we have a cart, refresh prices that might be impacted by new rows
     if (typeof reconcileCartWithCatalog === 'function') {
       try { reconcileCartWithCatalog(ALL_ROWS); } catch (e) { console.warn("[cart reconcile] err", e); }
     }
 
     // Prefetch next page opportunistically
-    if (typeof VIRTUAL_PREFETCH !== "undefined" && VIRTUAL_PREFETCH > 0) {
+    if (VIRTUAL_PREFETCH > 0) {
       setTimeout(() => {
         if (!_noMorePages && !_isLoadingPage) {
           fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor + 1, VIRTUAL_PAGE_SIZE)
             .then(({ header, dataRows }) => {
-              if (typeof _prefetched !== 'object' || !_prefetched) _prefetched = {};
+              if (!Array.isArray(_prefetched)) _prefetched = {};
               _prefetched[_pageCursor + 1] = { header, dataRows };
             })
             .catch(() => {});
@@ -1900,27 +1891,20 @@ async function loadNextPage() {
       }, 0);
     }
 
-    // === Recompute + paint safely after adding windowRows ===
-    const hadActive = hasAnyActiveFilter();
-    const beforeLen = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
-
-    // Recompute ONLY (don’t let applyFilters paint)
-    try { applyFilters({ render: false, sort: "stable" }); }
-    catch (e) { console.error('[loadNextPage] applyFilters error', e); }
-
-    if (hadActive) {
-      // Full repaint so no stale rows can sneak in during search/filter
-      const table = document.getElementById('data-table') || ensureTable();
-      const tbody = table.querySelector('tbody');
-      if (tbody) tbody.innerHTML = '';
-      renderTableAppendChunked(FILTERED_ROWS, 0);
+    // Render strategy:
+    //  - Subsequent pages: compute delta after applyFilters and only append new rows
+    if (_pageCursor === 0) {
+      try { if (typeof applyFilters === 'function') applyFilters(); }
+      catch (e) { console.error('[loadNextPage] applyFilters error', e); }
+      const current = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.slice() : [];
+      renderTableAppend(current);
     } else {
-      // No active filters: append only the new tail for smooth infinite scroll
-      const afterLen = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
-      const delta = (afterLen > beforeLen && Array.isArray(FILTERED_ROWS))
-        ? FILTERED_ROWS.slice(beforeLen)
-        : [];
-      renderTableAppend(delta);  // note: this is a no-op if you gate on hasAnyActiveFilter()
+      const before = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
+      try { if (typeof applyFilters === 'function') applyFilters(); }
+      catch (e) { console.error('[loadNextPage] applyFilters error', e); }
+      const after = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
+      const delta = (after > before && Array.isArray(FILTERED_ROWS)) ? FILTERED_ROWS.slice(before) : [];
+      renderTableAppend(delta);
     }
 
     _pageCursor++;
@@ -1930,7 +1914,6 @@ async function loadNextPage() {
     _isLoadingPage = false;
   }
 }
-
 
 function setupInfiniteScroll() {
   const container = document.getElementById('table-container') || document.body;

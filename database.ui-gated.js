@@ -11,8 +11,6 @@ function verifyRecordCount(){
     const expected = EXPECTED_ROW_COUNT || 0;
     const actual = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
     const ok = expected ? (actual === expected) : true;
-    if (ok) { try { FULLY_LOADED = true; } catch(_){} }
-    console.log("[verifyRecordCount]", { expected, actual, ok });
 
     // Update status pill if available
     if (typeof updateDataStatus === "function"){
@@ -27,6 +25,8 @@ function verifyRecordCount(){
       if (ok) { badge.classList.add("ok"); badge.classList.remove("warn"); }
       else { badge.classList.add("warn"); badge.classList.remove("ok"); }
     }
+
+    console.log("[verifyRecordCount]", { expected, actual, ok });
     return { expected, actual, ok };
   } catch (e){
     console.warn("[verifyRecordCount] failed", e);
@@ -34,28 +34,12 @@ function verifyRecordCount(){
   }
 }
 
-// Expose for console checking
-window.setExpectedRowCount = setExpectedRowCount;
-window.verifyRecordCount = verifyRecordCount;
 
-// ===== 429-aware fetch + rate limit gate (Sheets) ============================
-const RL_MAX_PER_MIN = 30;             // Adjust if your quota allows
-const RL_INTERVAL_MS = 60_000;
-let __rl_timestamps = [];
-
-/** Blocks until a slot is available under the per-minute cap. */
-async function __rateLimitGate(){
-  while (true){
-    const now = Date.now();
-    __rl_timestamps = __rl_timestamps.filter(t => now - t < RL_INTERVAL_MS);
-    if (__rl_timestamps.length < RL_MAX_PER_MIN){
-      __rl_timestamps.push(now);
-      return;
-    }
-    const waitMs = (RL_INTERVAL_MS - (now - __rl_timestamps[0])) + Math.floor(Math.random()*250);
-    await new Promise(r => setTimeout(r, waitMs));
-  }
+// Only show the table if all data is fetched AND a search/filter is active
+function shouldShowTable(){
+  return isAllDataFetched() && hasAnyActiveFilter();
 }
+
 
 /** Exponential backoff with jitter for 429/5xx */
 function __backoffDelay(attempt){
@@ -221,12 +205,6 @@ let tokenClient = null;
 let accessToken = null;
 
 // --- Smooth rendering knobs ---
-
-// --- UX gating (mobile-first) ---
-const RENDER_ONLY_AFTER_INTERACTION = true; // Hide table until the user searches or picks a filter
-const RENDER_ONLY_AFTER_FULL_FETCH = true;  // Also wait until ALL pages are fetched before showing results
-let USER_INTERACTED = false;                // flips true on first search/filter input
-let FULLY_LOADED = false;                   // flips true when record count matches EXPECTED_ROW_COUNT
 let BACKGROUND_PAGE_DELAY_MS = 400;
 const RENDER_CHUNK = 200; // #rows appended to DOM per idle slice
 const ric = window.requestIdleCallback || (fn => setTimeout(() => fn({ timeRemaining: () => 8 }), 0));
@@ -236,7 +214,7 @@ let _ingestSeq = 0; // monotonically increasing id assigned to each row as it ar
 
 let _controlsWired = false;
 // --- Virtualization / paging config (mobile-first) ---
-const VIRTUAL_PAGE_SIZE = 600;   
+const VIRTUAL_PAGE_SIZE = 600;   // ~250 rows per window feels snappy on iPhone
 const VIRTUAL_PREFETCH = 1;      // prefetch next page proactively
 let _pageCursor = 0;             // 0-based page index
 let _pageTitle = null;           // resolved sheet title
@@ -789,9 +767,20 @@ function hasAnyActiveFilter(){
 
 function toggleBgHint() {
   try {
-    const show = !hasAnyActiveFilter();
     const hint = document.getElementById('bg-hint');
-    if (hint) hint.style.display = show ? 'block' : 'none';
+    if (!hint) return;
+    const ready = isAllDataFetched();
+    const anyFilter = hasAnyActiveFilter();
+    // Message & visibility:
+    if (!ready) {
+      hint.textContent = 'Finishing data load… then use search or filters.';
+      hint.style.display = 'block';
+    } else if (!anyFilter) {
+      hint.textContent = 'Type in the search box or choose a filter to show results.';
+      hint.style.display = 'block';
+    } else {
+      hint.style.display = 'none';
+    }
   } catch {}
 }
 
@@ -840,65 +829,49 @@ function renderCategoryChips() {
     const sel = document.getElementById("categoryFilter");
     if (sel) sel.value = ACTIVE_CATEGORY;
     Array.from(wrap.querySelectorAll(".chip")).forEach(c => c.classList.toggle("active", c === chip));
-applyFilters({ render: false, sort: "stable" });
+    applyFilters();
   };
 }
 function applyFilters(opts = {}){
-
-  // UI gates: require interaction + (optionally) full fetch before showing table
-  try {
-    if (RENDER_ONLY_AFTER_INTERACTION && !USER_INTERACTED) {
-      showEl && showEl('table-container', false);
-      toggleBgHint && toggleBgHint();
-      return;
-    }
-    if (RENDER_ONLY_AFTER_FULL_FETCH && !FULLY_LOADED) {
-      // Keep the table hidden and show status while we finish fetching
-      showEl && showEl('table-container', false);
-      updateDataStatus && updateDataStatus('loading', 'Fetching all records…');
-      return;
-    }
-  } catch(_) {}
   const { render = true, sort = "alpha" } = opts;
 
-  
-  // Only show table when at least one filter/search is active
-  if (!hasAnyActiveFilter()) {
+  // Gate visibility: require data ready AND at least one search/filter active
+  const ready = isAllDataFetched();
+  const anyFilter = hasAnyActiveFilter();
+  if (!ready || !anyFilter) {
     try {
       const table = document.getElementById('data-table') || ensureTable();
       const tbody = table.querySelector('tbody');
       if (tbody) tbody.innerHTML = '';
       showEl && showEl('table-container', false);
-  toggleBgHint();
     } catch(_) {}
     FILTERED_ROWS = [];
+    toggleBgHint();
     return;
   } else {
-    showEl && showEl("table-container", hasAnyActiveFilter());
+    showEl && showEl("table-container", true);
   }
-const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS))
-    ? FILTERED_ROWS.length : 0;
+
+  const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS))
+      ? FILTERED_ROWS.length : 0;
   dbg("[applyFilters] before:", beforeCount, "ALL_ROWS:", (Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0));
 
   const q    = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
   const vSel = (document.getElementById("vendorFilter")?.value || "");
-  const cSel = ACTIVE_CATEGORY || (document.getElementById("categoryFilter")?.value || "");
+  const cSel = (typeof ACTIVE_CATEGORY !== 'undefined' && ACTIVE_CATEGORY) || (document.getElementById("categoryFilter")?.value || "");
 
   // Compute only — do not touch DOM here
   const filtered = (ALL_ROWS || []).filter(r => {
-   const hasQuery      = !!q;
-const matchesVendor = hasQuery ? true : (!vSel || r.vendor === vSel);
-const matchesCat    = hasQuery ? true : (!cSel || r.category === cSel);
-const hay = `${r.sku} ${r.description} ${r.vendor} ${r.uom}`.toLowerCase();
-const matchesQuery  = !q || hay.includes(q);
-return matchesVendor && matchesCat && matchesQuery;
-
+    const matchesVendor = !vSel || r.vendor === vSel;
+    const matchesCat    = !cSel || r.category === cSel;
+    const hay = `${r.sku} ${r.description}`.toLowerCase();
+    const matchesQuery = !q || hay.includes(q);
+    return matchesVendor && matchesCat && matchesQuery;
   });
 
   let arr = filtered.slice();
 
   if (sort === "alpha"){
-    // Your old alpha comparator
     arr.sort((a,b) =>
       (a.category || "").localeCompare(b.category || "") ||
       a.description.localeCompare(b.description) ||
@@ -918,7 +891,11 @@ return matchesVendor && matchesCat && matchesQuery;
   const tbody = table.querySelector('tbody');
   if (tbody) tbody.innerHTML = '';
   renderTableAppendChunked(FILTERED_ROWS, 0);
+  toggleBgHint();
 }
+
+
+  
 
 
 // ====================== Cart ============================
@@ -1460,7 +1437,6 @@ async function preloadAllPages() {
       pagesFetched++;
       if (BACKGROUND_PAGE_DELAY_MS) await sleep(BACKGROUND_PAGE_DELAY_MS);
     }
-    FULLY_LOADED = true;
     updateDataStatus && updateDataStatus("fresh", "Up to date • " + new Date().toLocaleTimeString());
   } catch (e) {
     console.error("[preloadAllPages] failed", e);
@@ -1484,7 +1460,6 @@ function renderTableAppendChunked(rows, startIdx = 0){
 
 // ====================== Main Flow ========================
 async function listSheetData() {
-  try { FULLY_LOADED = false; } catch(_) {}
   dbg("[listSheetData] starting lazy load. Resetting state.");
 
   // 0) Show cached immediately, then revalidate
@@ -1554,16 +1529,15 @@ function wireControlsOnce() {
   const clearCartBtn = document.getElementById("clearCart");
   const addLaborBtn  = document.getElementById("addLabor");
 
-  if (search) search.addEventListener("input", debounce(() => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); }, 120));
-  if (vendor) vendor.addEventListener("change", () => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); });
+  if (search) search.addEventListener("input", debounce(() => applyFilters({ render: true, sort: "stable" }), 120));
+  if (vendor) vendor.addEventListener("change", () => applyFilters({ render: true, sort: "stable" }));
   if (catSel) catSel.addEventListener("change", () => {
     ACTIVE_CATEGORY = catSel.value || "";
-    USER_INTERACTED = true;
     renderCategoryChips();
     applyFilters({ render: true, sort: "stable" });
   });
 
-  if (clear) clear.addEventListener("click", () => { USER_INTERACTED = true;
+  if (clear) clear.addEventListener("click", () => {
     if (search) search.value = "";
     if (vendor) vendor.value = "";
     ACTIVE_CATEGORY = "";
@@ -1579,7 +1553,7 @@ function wireControlsOnce() {
 // Ensure table visibility follows filter state
 const $search = document.getElementById('searchInput');
 if ($search && !$search.__bgFilterWired) {
-  $search.addEventListener('input', () => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); });
+  $search.addEventListener('input', () => applyFilters({ render: true, sort: "stable" }));
   $search.__bgFilterWired = true;
 }
 const $vendor = document.getElementById('vendorFilter');
@@ -1589,7 +1563,7 @@ if ($vendor && !$vendor.__bgFilterWired) {
 }
 const $cat = document.getElementById('categoryFilter');
 if ($cat && !$cat.__bgFilterWired) {
-  $cat.addEventListener('change', () => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); });
+  $cat.addEventListener('change', () => applyFilters({ render: true, sort: "stable" }));
   $cat.__bgFilterWired = true;
 }
 if (typeof window.ACTIVE_CATEGORY !== 'undefined') {
@@ -1832,7 +1806,6 @@ function showSkeletonRows(n=6){
 function removeSkeletonRows(){
   document.querySelectorAll('.row-skeleton').forEach(el=>el.remove());
 }
-const hadActive = hasAnyActiveFilter();
 
 async function loadNextPage() {
 
@@ -1843,56 +1816,50 @@ async function loadNextPage() {
   if (typeof showEl === 'function') showEl('loadingBarOverlay', true);
 
   try {
-    // Prefer a prefetched page if available
-    let header, dataRows;
-    if (typeof _prefetched === 'object' && _prefetched && _prefetched[_pageCursor]) {
-      ({ header, dataRows } = _prefetched[_pageCursor]);
-      try { delete _prefetched[_pageCursor]; } catch(_) {}
-    } else {
-      const resp = await withRetry(
-        () => fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor, VIRTUAL_PAGE_SIZE),
-        3,
-        200
-      );
-      ({ header, dataRows } = resp || {});
-    }
-
+    const resp = await withRetry(
+      () => fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor, VIRTUAL_PAGE_SIZE),
+      3,
+      200
+    );
+    const { header, dataRows } = resp;
     const windowRows = transformWindowRows(header, dataRows);
+
     dbg("[fetchRowsWindow] pageIdx:", _pageCursor, "pageSize:", VIRTUAL_PAGE_SIZE, "got:", windowRows.length);
 
-    if (!Array.isArray(windowRows) || windowRows.length === 0) {
+    if (windowRows.length === 0) {
       _noMorePages = true;
       return;
     }
 
-    // First page — initialize filters/UI and clear old rows
     if (_pageCursor === 0) {
+      // First page — initialize table and filters
       if (typeof buildCategories === 'function') buildCategories(windowRows);
       if (typeof populateVendorFilter === 'function') populateVendorFilter(windowRows);
       if (typeof populateCategoryFilter === 'function') populateCategoryFilter(windowRows);
       if (typeof renderCategoryChips === 'function') renderCategoryChips();
 
+      // Reset table body before first paint
       const table = document.getElementById('data-table') || ensureTable();
       const tbody = table.querySelector('tbody');
       if (tbody) tbody.innerHTML = '';
     }
 
-    // Append to master list
+    // Append to master list then (re)filter
     if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
     Array.prototype.push.apply(ALL_ROWS, windowRows);
 
-    // Keep cart prices in sync with latest rows (if cart exists)
+    // If we have a cart, refresh prices that might be impacted by new rows
     if (typeof reconcileCartWithCatalog === 'function') {
       try { reconcileCartWithCatalog(ALL_ROWS); } catch (e) { console.warn("[cart reconcile] err", e); }
     }
 
     // Prefetch next page opportunistically
-    if (typeof VIRTUAL_PREFETCH !== "undefined" && VIRTUAL_PREFETCH > 0) {
+    if (VIRTUAL_PREFETCH > 0) {
       setTimeout(() => {
         if (!_noMorePages && !_isLoadingPage) {
           fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor + 1, VIRTUAL_PAGE_SIZE)
             .then(({ header, dataRows }) => {
-              if (typeof _prefetched !== 'object' || !_prefetched) _prefetched = {};
+              if (!Array.isArray(_prefetched)) _prefetched = {};
               _prefetched[_pageCursor + 1] = { header, dataRows };
             })
             .catch(() => {});
@@ -1900,27 +1867,20 @@ async function loadNextPage() {
       }, 0);
     }
 
-    // === Recompute + paint safely after adding windowRows ===
-    const hadActive = hasAnyActiveFilter();
-    const beforeLen = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
-
-    // Recompute ONLY (don’t let applyFilters paint)
-    try { applyFilters({ render: false, sort: "stable" }); }
-    catch (e) { console.error('[loadNextPage] applyFilters error', e); }
-
-    if (hadActive) {
-      // Full repaint so no stale rows can sneak in during search/filter
-      const table = document.getElementById('data-table') || ensureTable();
-      const tbody = table.querySelector('tbody');
-      if (tbody) tbody.innerHTML = '';
-      renderTableAppendChunked(FILTERED_ROWS, 0);
+    // Render strategy:
+    //  - Subsequent pages: compute delta after applyFilters and only append new rows
+    if (_pageCursor === 0) {
+      try { if (typeof applyFilters === 'function') applyFilters(); }
+      catch (e) { console.error('[loadNextPage] applyFilters error', e); }
+      const current = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.slice() : [];
+      renderTableAppend(current);
     } else {
-      // No active filters: append only the new tail for smooth infinite scroll
-      const afterLen = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
-      const delta = (afterLen > beforeLen && Array.isArray(FILTERED_ROWS))
-        ? FILTERED_ROWS.slice(beforeLen)
-        : [];
-      renderTableAppend(delta);  // note: this is a no-op if you gate on hasAnyActiveFilter()
+      const before = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
+      try { if (typeof applyFilters === 'function') applyFilters(); }
+      catch (e) { console.error('[loadNextPage] applyFilters error', e); }
+      const after = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
+      const delta = (after > before && Array.isArray(FILTERED_ROWS)) ? FILTERED_ROWS.slice(before) : [];
+      renderTableAppend(delta);
     }
 
     _pageCursor++;
@@ -1930,7 +1890,6 @@ async function loadNextPage() {
     _isLoadingPage = false;
   }
 }
-
 
 function setupInfiniteScroll() {
   const container = document.getElementById('table-container') || document.body;
