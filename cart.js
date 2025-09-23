@@ -23,11 +23,16 @@
 
   // ---------- BroadcastChannel (for live sync between pages) ----------
   const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
-  function broadcastCart(state) {
-    if (!bc) return;
-    // Use a single canonical message shape everywhere
-    try { bc.postMessage({ type: "cartUpdate", state }); } catch {}
-  }
+function broadcastCart(state) {
+  if (!bc) return;
+  try {
+    // Canonical name
+    bc.postMessage({ type: "cart:update", state });
+    // Backward-compat while both pages are in flux
+    bc.postMessage({ type: "cartUpdate", state });
+  } catch {}
+}
+
 
   // ---------- Tiny utils ----------
   const $ = (sel) => document.querySelector(sel);
@@ -67,25 +72,28 @@
   }
 
   // LocalStorage helpers
-  function getSaved() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { cart: [], labor: [] };
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return { cart: [], labor: [] };
-      if (!Array.isArray(parsed.cart)) parsed.cart = [];
-      if (!Array.isArray(parsed.labor)) parsed.labor = [];
-      return parsed;
-    } catch {
-      return { cart: [], labor: [] };
-    }
+function getSaved() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return normalizeSaved(raw ? JSON.parse(raw) : null);
+  } catch {
+    return { cart: [], labor: [] };
   }
-  function setSaved(state) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      broadcastCart(state);
-    } catch {}
-  }
+}
+
+function setSaved(nextState) {
+  try {
+    const prev = getSaved();
+    const merged = normalizeSaved({
+      cart:  Array.isArray(nextState?.cart)  ? nextState.cart  : prev.cart,
+      labor: Array.isArray(nextState?.labor) ? nextState.labor : prev.labor,
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    broadcastCart(merged);
+  } catch {}
+}
+
+
 
   // ---------- Airtable wiring (unchanged logic; minor cleanups) ----------
   const els = {
@@ -350,212 +358,262 @@
     return rows;
   }
 
-  function renderLaborList(state) {
-    const rowsHost = ensureLaborRowsContainer();
-    if (!rowsHost) return;
+ 
+function renderLaborList(state) {
+  const rowsHost = (typeof ensureLaborRowsContainer === "function")
+    ? ensureLaborRowsContainer()
+    : document.getElementById("labor-rows");
+  if (!rowsHost) return;
 
-    const labor = Array.isArray(state?.labor) ? state.labor : [];
-    if (!labor.length) {
-      rowsHost.innerHTML = `<div class="muted-sm" style="opacity:.8;">No labor lines yet. Click “+ Add Labor Line”.</div>`;
-      return;
-    }
+  const live = state ?? getSaved();
 
-    const html = labor.map(l => {
-      const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
-      const rate = Math.max(0, Number(l.rate) || 0);
-      const pct  = Math.max(0, Number(l.marginPct) || 0);
-      const line = qty * rate * (1 + pct / 100);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+  const toNumber = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+  const clampInt = (v) => Math.max(0, Math.floor(Number(v) || 0));
+  const money = (n) => (typeof formatMoney === "function") ? formatMoney(n) : `$${(Number(n)||0).toFixed(2)}`;
+  const computeLine = (qty, rate, marginPct) => clampInt(qty) * toNumber(rate) * (1 + (toNumber(marginPct) / 100));
 
-      return `
-        <div class="card" data-labor-id="${l.id}" style="padding:10px;border:1px solid rgba(0,0,0,.08);border-radius:10px;">
-          <div class="grid" style="grid-template-columns: 2fr 1fr 1fr 1fr auto; gap:8px;">
-            <div class="field">
-              <label class="field-label">Description</label>
-              <input type="text" class="labor-desc" value="${(l.desc ?? "Labor")}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Qty</label>
-              <input type="number" class="labor-qty" min="0" step="1" value="${qty}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Rate</label>
-              <input type="number" class="labor-rate" min="0" step="1" value="${rate}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Margin (%)</label>
-              <input type="number" class="labor-margin" min="0" step="1" value="${pct}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Line Total</label>
-              <div class="money" data-labor-cell="lineTotal">${formatMoney(line)}</div>
-            </div>
-          </div>
-          <div class="right" style="margin-top:8px;">
-            <button class="btn danger remove-labor">Remove</button>
-          </div>
-        </div>
-      `;
-    }).join("");
+  // Delegate listeners (bind once)
+  if (!rowsHost._bound) {
+    const onFieldEdit = (ev) => {
+      const card = ev.target.closest(".card[data-labor-id]");
+      if (!card) return;
+      const id = card.getAttribute("data-labor-id");
+      const data = getSaved();
+      const rec = (data.labor || []).find(x => x.id === id);
+      if (!rec) return;
 
-    rowsHost.innerHTML = html;
+      rec.description = card.querySelector("input.labor-desc")?.value ?? (rec.description || rec.desc || "Labor");
+      rec.qty    = clampInt(card.querySelector("input.labor-qty")?.value ?? rec.qty);
+      rec.rate   = toNumber(card.querySelector("input.labor-rate")?.value ?? rec.rate);
+      rec.margin = toNumber(card.querySelector("input.labor-margin")?.value ?? (rec.margin ?? rec.marginPct ?? 0));
 
-    // Per-card inputs recalc
-    rowsHost.querySelectorAll(".card[data-labor-id]").forEach(card => {
-      const id     = card.getAttribute("data-labor-id");
-      const descEl = card.querySelector(".labor-desc");
-      const qtyEl  = card.querySelector(".labor-qty");
-      const rateEl = card.querySelector(".labor-rate");
-      const margEl = card.querySelector(".labor-margin");
-      const lineBox = card.querySelector('[data-labor-cell="lineTotal"]');
+      setSaved(data);
 
-      function recalcAndSave() {
-        const data = getSaved();
-        const row  = (data.labor || []).find(x => x.id === id);
-        if (!row) return;
-        const qty  = Math.max(0, Math.floor(toNumberLoose(qtyEl.value)));
-        const rate = Math.max(0, toNumberLoose(rateEl.value));
-        const pct  = Math.max(0, toNumberLoose(margEl.value));
+      const line = computeLine(rec.qty, rec.rate, rec.margin);
+      const lineEl = card.querySelector('[data-cell="line"] .cell-text, [data-line-total]');
+      if (lineEl) lineEl.textContent = money(line);
 
-        row.desc = String(descEl.value || "Labor");
-        row.qty = qty;
-        row.rate = rate;
-        row.marginPct = pct;
+      updateTotalsOnly(getSaved());
+    };
 
-        setSaved(data);
-        const line = qty * rate * (1 + pct / 100);
-        lineBox.textContent = formatMoney(line);
-        updateTotalsOnly(data);
-      }
+    rowsHost.addEventListener("input", onFieldEdit);
+    rowsHost.addEventListener("change", onFieldEdit); // catches spinner clicks & mobile keyboards
 
-      descEl.addEventListener("input", recalcAndSave);
-      qtyEl.addEventListener("input", recalcAndSave);
-      rateEl.addEventListener("input", recalcAndSave);
-      margEl.addEventListener("input", recalcAndSave);
+    rowsHost.addEventListener("click", (ev) => {
+      const btn = ev.target.closest(".remove-labor");
+      if (!btn) return;
+      const card = btn.closest(".card[data-labor-id]");
+      const id = card ? card.getAttribute("data-labor-id") : null;
+
+      const data = getSaved();
+      let next = Array.isArray(data.labor) ? data.labor.slice() : [];
+
+      // Prefer id match; fall back to DOM index if needed
+      let idx = id ? next.findIndex(x => x.id === id) : -1;
+      if (idx === -1 && card?.dataset?.idx) idx = Number(card.dataset.idx);
+      if (idx >= 0) next.splice(idx, 1);
+
+      data.labor = next;
+      setSaved(data);
+
+      renderLaborList(getSaved());
+      updateTotalsOnly(getSaved());
+      try { showToast && showToast("Labor line removed"); } catch {}
     });
 
-    // Robust delegated remove (works across re-renders)
-    if (!rowsHost._removeBound) {
-      rowsHost.addEventListener("click", (ev) => {
-        const btn = ev.target.closest(".remove-labor");
-        if (!btn) return;
-        const card = btn.closest(".card[data-labor-id]");
-        const id = card ? card.getAttribute("data-labor-id") : null;
-        if (!id) return;
-        const data = getSaved();
-        data.labor = (data.labor || []).filter(x => x.id !== id);
-        setSaved(data);
-        renderLaborList(data);
-        updateTotalsOnly(data);
-        showToast?.("Labor line removed");
-      });
-      rowsHost._removeBound = true;
-    }
+    rowsHost._bound = true;
   }
 
-  function addLaborLine(defaults = {}) {
-    const data = getSaved();
-    const id = "L" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
-    const item = {
-      id,
-      desc: nonEmpty(defaults.desc) ? String(defaults.desc) : "Labor",
-      qty: Number.isFinite(defaults.qty) ? Math.max(0, Math.floor(defaults.qty)) : 1,
-      rate: Number.isFinite(defaults.rate) ? Math.max(0, defaults.rate) : 0,
-      marginPct: Number.isFinite(defaults.marginPct) ? Math.max(0, defaults.marginPct) : 0,
-    };
-    data.labor = Array.isArray(data.labor) ? data.labor : [];
-    data.labor.push(item);
-    setSaved(data);
-    renderLaborList(data);
-    updateTotalsOnly(data);
-    showToast?.("Labor line added");
+  const labor = Array.isArray(live?.labor) ? live.labor : [];
+  if (!labor.length) {
+    rowsHost.innerHTML = `<div class="muted-sm" style="opacity:.8;">No labor lines yet. Click “+ Add Labor Line”.</div>`;
+    return;
   }
+
+  // Backfill ids & normalize keys, then persist once so storage matches DOM
+  let dirty = false;
+  for (const row of labor) {
+    if (!row.id) { row.id = "L" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); dirty = true; }
+    if (row.desc && !row.description) { row.description = row.desc; dirty = true; }
+    if (row.marginPct != null && row.margin == null) { row.margin = row.marginPct; dirty = true; }
+  }
+  if (dirty) {
+    const s = getSaved(); s.labor = labor;
+    try { localStorage.setItem("vanir_cart_v1", JSON.stringify(normalizeSaved(s))); } catch {}
+  }
+
+  // Build cards (now with data-idx)
+  const cards = labor.map((row, i) => {
+    const id = row.id;
+    const desc   = esc(row.description || "Labor");
+    const qty    = clampInt(row.qty);
+    const rate   = toNumber(row.rate);
+    const margin = toNumber(row.margin);
+    const line   = computeLine(qty, rate, margin);
+
+    return `
+      <div class="card" data-labor-id="${id}" data-idx="${i}">
+        <div class="grid grid-labor">
+          <div class="stack">
+            <label class="field-label">Description</label>
+            <input type="text" class="labor-desc" value="${desc}">
+          </div>
+          <div class="stack">
+            <label class="field-label">Qty</label>
+            <input type="number" class="labor-qty" min="0" step="1" value="${qty}">
+          </div>
+          <div class="stack">
+            <label class="field-label">Rate</label>
+            <input type="number" class="labor-rate" min="0" step="0.01" value="${rate}">
+          </div>
+          <div class="stack">
+            <label class="field-label">Margin (%)</label>
+            <input type="number" class="labor-margin" min="0" step="1" value="${margin}">
+          </div>
+          <div class="stack">
+            <label class="field-label">Line Total</label>
+            <div data-cell="line"><span class="cell-text nowrap-ellipsize">${
+              money(line)
+            }</span></div>
+          </div>
+          <div class="stack" style="align-self:end;">
+            <button type="button" class="btn danger remove-labor">Remove</button>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  rowsHost.innerHTML = cards.join("");
+
+  // NEW: after render, read the DOM once and persist exactly what’s displayed
+  syncLaborFromDOM();
+}
+
+
+
+
+function addLaborLine(defaults = {}) {
+  const data = getSaved();
+  const id = "L" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+
+  // Use the normalized keys the rest of the code expects
+  const item = {
+    id,
+    description: (defaults.description ?? defaults.desc ?? "Labor"),
+    qty: Number.isFinite(defaults.qty) ? Math.max(0, Math.floor(defaults.qty)) : 1,
+    rate: Number.isFinite(defaults.rate) ? Math.max(0, defaults.rate) : 0,
+    margin: Number.isFinite(defaults.margin ?? defaults.marginPct)
+              ? Math.max(0, (defaults.margin ?? defaults.marginPct))
+              : 0,
+  };
+
+  data.labor = Array.isArray(data.labor) ? data.labor : [];
+  data.labor.push(item);
+  setSaved(data);
+  renderLaborList(data);
+  updateTotalsOnly(data);
+  showToast?.("Labor line added");
+}
+
 
   // ---------- CART RENDER / REMOVE / CLEAR ----------
-  function renderSavedCart(state) {
-    const tbody = document.querySelector("#cart-table tbody");
-    if (!tbody) return;
+ // Replace your renderSavedCart with this version
+function renderSavedCart(stateMaybe) {
 
-    const items = Array.isArray(state?.cart) ? state.cart : [];
-    const rows = [];
+ const fresh = getSaved();
+  const state = (stateMaybe && Array.isArray(stateMaybe.cart))
+    ? { ...fresh, cart: stateMaybe.cart }
+    : fresh;
 
-    for (const saved of items) {
-      const unit = itemUnitSell(saved);
-      const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
-      const line = unit * qty;
+  const tbody = document.querySelector("#cart-table tbody");
+  if (!tbody) return;
 
-      rows.push(`
-        <tr data-key="${(saved.key || "")}">
-          <td data-label="Vendor">${(saved?.row?.vendor ?? "")}</td>
-          <td data-label="SKU">${(saved?.row?.sku ?? "")}</td>
-          <td data-label="Description">${(saved?.row?.description ?? "")}</td>
-          <td data-label="Qty">
-            <div class="stack">
-              <label class="field-label">QTY</label>
-              <input type="number" class="cart-qty" min="0" step="1"
-                     value="${qty}" data-key="${(saved.key || "")}">
-            </div>
-          </td>
-          <td data-label="Unit" data-cell="unit"><span class="cell-text nowrap-ellipsize">${formatMoney(unit)}</span></td>
-          <td data-label="Line Total" data-cell="line"><span class="cell-text nowrap-ellipsize">${formatMoney(line)}</span></td>
-          <td data-label="Actions"><button class="btn danger remove-item" data-key="${(saved.key || "")}">Remove</button></td>
-        </tr>
-      `);
-    }
+  const items = Array.isArray(state.cart) ? state.cart : [];
+  const rows = [];
 
-    tbody.innerHTML = rows.join("");
+  for (const saved of items) {
+    const unit = itemUnitSell(saved);
+    const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
+    const line = unit * qty;
 
-    // Also (re)render labor list so both sections stay in sync
-    renderLaborList(state);
-
-    // Footer totals
-    updateTotalsOnly(state);
-
-    // Inline qty edits update storage + totals
-    tbody.oninput = (ev) => {
-      const qtyEl = ev.target.closest(".cart-qty");
-      if (!qtyEl) return;
-      const key = qtyEl.getAttribute("data-key");
-      const data = getSaved();
-      const item = data.cart.find(c => c.key === key);
-      if (!item) return;
-
-      item.qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
-      setSaved(data);            // persist + broadcast
-      renderSavedCart(data);     // re-render row + totals + labor list
-    };
-
-    // Remove product buttons
-    tbody.onclick = (ev) => {
-      const btn = ev.target.closest(".remove-item");
-      if (!btn) return;
-      const key = btn.getAttribute("data-key");
-      removeItemFromCart(key);
-    };
+    rows.push(`
+      <tr data-key="${(saved.key || "")}">
+        <td data-label="Vendor">${(saved?.row?.vendor ?? "")}</td>
+        <td data-label="SKU">${(saved?.row?.sku ?? "")}</td>
+        <td data-label="Description">${(saved?.row?.description ?? "")}</td>
+        <td data-label="Qty">
+          <div class="stack">
+            <label class="field-label">QTY</label>
+            <input type="number" class="cart-qty" min="0" step="1"
+                   value="${qty}" data-key="${(saved.key || "")}">
+          </div>
+        </td>
+        <td data-label="Unit" data-cell="unit"><span class="cell-text nowrap-ellipsize">${formatMoney(unit)}</span></td>
+        <td data-label="Line Total" data-cell="line"><span class="cell-text nowrap-ellipsize">${formatMoney(line)}</span></td>
+        <td data-label="Actions"><button class="btn danger remove-item" data-key="${(saved.key || "")}">Remove</button></td>
+      </tr>
+    `);
   }
 
-  function updateTotalsOnly(state) {
-    const products = Array.isArray(state?.cart) ? state.cart : [];
-    const labor    = Array.isArray(state?.labor) ? state.labor : [];
+  tbody.innerHTML = rows.join("");
 
-    const marginPct = getGlobalMarginPct();
-    const productsTotal = products.reduce((sum, saved) => {
-      const base = Number(saved.unitBase) || 0;
-      const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
-      const unitSell = base * (1 + marginPct / 100);
-      return sum + unitSell * qty;
-    }, 0);
+  // Render labor & totals from the *freshest* state
+  renderLaborList(state);
+  updateTotalsOnly(state);
 
-    const laborTotal = labor.reduce((sum, l) => {
-      const qty  = Math.max(0, Math.floor(toNumberLoose(l.qty)));
-      const rate = Math.max(0, toNumberLoose(l.rate));
-      const pct  = Math.max(0, toNumberLoose(l.marginPct));
-      return sum + qty * rate * (1 + pct / 100);
-    }, 0);
+  // Inline qty edits
+  tbody.oninput = (ev) => {
+    const qtyEl = ev.target.closest(".cart-qty");
+    if (!qtyEl) return;
+    const key = qtyEl.getAttribute("data-key");
+    const data = getSaved();
+    const item = data.cart.find(c => c.key === key);
+    if (!item) return;
 
-    $("#productTotal").textContent = formatMoney(productsTotal);
-    $("#laborTotal").textContent   = formatMoney(laborTotal);
-    $("#grandTotal").textContent   = formatMoney(productsTotal + laborTotal);
-  }
+    item.qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
+    setSaved(data);
+    renderSavedCart(); // no arg → will pull fresh
+  };
+
+  // Remove product buttons
+  tbody.onclick = (ev) => {
+    const btn = ev.target.closest(".remove-item");
+    if (!btn) return;
+    const key = btn.getAttribute("data-key");
+    removeItemFromCart(key);
+  };
+ 
+}
+
+
+function updateTotalsOnly(state) {
+  const products = Array.isArray(state?.cart) ? state.cart : [];
+  const labor    = Array.isArray(state?.labor) ? state.labor : [];
+
+  const marginPct = getGlobalMarginPct();
+  const productsTotal = products.reduce((sum, saved) => {
+    const base = Number(saved.unitBase) || 0;
+    const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
+    const unitSell = base * (1 + marginPct / 100);
+    return sum + unitSell * qty;
+  }, 0);
+
+  const laborTotal = labor.reduce((sum, l) => {
+    const qty  = Math.max(0, Math.floor(toNumberLoose(l.qty)));
+    const rate = Math.max(0, toNumberLoose(l.rate));
+    const pct  = Math.max(0, toNumberLoose(l.margin ?? l.marginPct)); // ← accept both
+    return sum + qty * rate * (1 + pct / 100);
+  }, 0);
+
+  $("#productTotal").textContent = formatMoney(productsTotal);
+  $("#laborTotal").textContent   = formatMoney(laborTotal);
+  $("#grandTotal").textContent   = formatMoney(productsTotal + laborTotal);
+}
+
 
   // Dedicated remove function
   function removeItemFromCart(key) {
@@ -608,6 +666,16 @@
       renderSavedCart(state);
     });
   }
+function normalizeSaved(state) {
+  const s = (state && typeof state === "object") ? state : {};
+  s.cart  = Array.isArray(s.cart)  ? s.cart  : [];
+  s.labor = Array.isArray(s.labor) ? s.labor : [];
+  // Backfill stable IDs so per-row remove can target exactly one
+  for (const row of s.labor) {
+    if (!row.id) row.id = "L" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+  }
+  return s;
+}
 
   // ---------- Init ----------
   document.addEventListener("DOMContentLoaded", async () => {
@@ -644,14 +712,19 @@
     const state = getSaved();
     renderSavedCart(state);
 
-    // Listen for external updates (e.g., from index.html)
-    if (bc) {
-      bc.onmessage = (ev) => {
-        if (ev?.data?.type === "cartUpdate") {
-          const fresh = getSaved();
-          renderSavedCart(fresh);
-        }
-      };
-    }
+    // Cross-tab updates (from index.html or another cart tab)
+if (bc && !bc._bound) {
+  bc._bound = true;
+  bc.onmessage = (ev) => {
+    const t = ev?.data?.type;
+    if (t === "focus") { try { window.focus(); } catch {} return; }
+    if (t !== "cart:update" && t !== "cartUpdate") return;
+
+    const s = normalizeSaved(getSaved());   // heal missing keys
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
+    renderSavedCart(s);
+  };
+}
+
   });
 })();
