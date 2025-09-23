@@ -493,8 +493,31 @@ function renderLaborList(state) {
   syncLaborFromDOM();
 }
 
+function syncLaborFromDOM() {
+  const rowsHost = document.getElementById("labor-rows");
+  if (!rowsHost) return;
 
+  const cards = Array.from(rowsHost.querySelectorAll(".card[data-labor-id]"));
+  const data = getSaved();
 
+  const toNum = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+  const clamp = (v) => Math.max(0, Math.floor(Number(v) || 0));
+
+  const next = cards.map(card => {
+    const id = card.getAttribute("data-labor-id");
+    const desc = card.querySelector("input.labor-desc")?.value || "Labor";
+    const qty = clamp(card.querySelector("input.labor-qty")?.value);
+    const rate = toNum(card.querySelector("input.labor-rate")?.value);
+    const margin = toNum(card.querySelector("input.labor-margin")?.value);
+    return { id, description: desc, qty, rate, margin };
+  });
+
+  data.labor = next;
+  setSaved(data);
+
+  // Recompute totals after syncing
+  updateTotalsOnly(getSaved());
+}
 
 function addLaborLine(defaults = {}) {
   const data = getSaved();

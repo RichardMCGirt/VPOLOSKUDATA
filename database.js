@@ -1,5 +1,7 @@
 // === Record Count Verification ==============================================
 const EXPECTED_ROW_COUNT = Number(localStorage.getItem('EXPECTED_ROW_COUNT') || 12709);
+// Example inside your chunking loop:
+
 
 function setExpectedRowCount(n){
   try { localStorage.setItem('EXPECTED_ROW_COUNT', String(n)); }
@@ -19,6 +21,18 @@ function verifyRecordCount(){
     const expected = EXPECTED_ROW_COUNT || 0;
     const actual = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
     const ok = expected ? (actual === expected) : true;
+    // (keep your existing lines above)
+
+// NEW: reflect real progress while pages stream in
+try {
+  if (expected > 0) {
+    const pct = Math.max(0, Math.min(100, Math.floor((actual / expected) * 100)));
+    if (!ok) bumpLoadingTo(Math.max(40, pct), `Loading ${actual} / ${expected}…`);
+    else bumpLoadingTo(100, "All records loaded");
+  }
+} catch (_) {}
+// (keep your existing console.log and status pill updates below)
+
    if (ok) { try { FULLY_LOADED = true; setControlsEnabledState(); } catch(_){} }
     console.log("[verifyRecordCount]", { expected, actual, ok });
 
@@ -165,9 +179,6 @@ function parseQuery(q){
   return { pos, ors, neg, fields };
 }
 
-// Checks a single token against a haystack with basic wildcards.
-// - If token ends with "*", treat as prefix match.
-// - If token starts with "^", treat as startsWith (anchor).
 // Otherwise: substring match.
 function tokenMatch(hay, token){
   if (!token) return true;
@@ -180,6 +191,36 @@ function tokenMatch(hay, token){
     return base ? hay.startsWith(base) : true;
   }
   return hay.includes(token);
+}
+// ===== Loading Bar helpers =====
+function setLoadingBar(percent = 0, label = "") {
+  try {
+    const bar = document.getElementById("loadingBar");
+    const lab = document.getElementById("loadingBarLabel");
+    const meta = document.getElementById("loadingBarMeta");
+    if (bar) bar.style.width = Math.max(0, Math.min(100, percent)) + "%";
+    if (lab && label) lab.textContent = label;
+    if (meta && label) meta.textContent = label;
+  } catch (_) {}
+}
+
+function showLoadingBar(show = true, label = "") {
+  try {
+    const o = document.getElementById("loadingBarOverlay");
+    if (!o) return;
+    o.style.display = show ? "flex" : "none";
+    if (show) setLoadingBar(5, label || "Starting…");
+  } catch (_) {}
+}
+
+/**
+ * Advance the bar but never go backwards; good for milestone bumps.
+ * Example: bumpLoadingTo(40, "Fetching data…");
+ */
+let __loadingBarMax = 0;
+function bumpLoadingTo(percent, label = "") {
+  __loadingBarMax = Math.max(__loadingBarMax, Math.min(100, Math.floor(percent)));
+  setLoadingBar(__loadingBarMax, label);
 }
 
 // Field match helper: accepts string OR {v,not} OR {or:[…]} objects
@@ -709,29 +750,34 @@ function gapiLoaded() {
     });
     gapiInited = true;
 
-    // Authless: enable controls and load data immediately
     try {
-      // Enable UI you previously disabled until sign-in
-          setControlsEnabledState();
+      setControlsEnabledState();
 
+      showLoadingBar(true, "Initializing…");       // NEW
+      bumpLoadingTo(10, "Connecting to Sheets API…");
 
-      showEl("table-container", false);
-      showEl("loadingBarOverlay", true);
-      await listSheetData();
+      // If you need header/meta first, you could bump to ~25% here.
+
+      bumpLoadingTo(25, "Fetching product data…");
+      await listSheetData();                       // your existing call
+
+      // When listSheetData returns, we likely transformed rows.
+      bumpLoadingTo(85, "Finalizing table…");
+
     } catch (e) {
       console.error("Error loading sheet (no-login mode):", e);
       showToast("Error loading sheet (see console).");
     } finally {
-      showEl("loadingBarOverlay", false);
+      bumpLoadingTo(100, "Ready");
+      setTimeout(() => showLoadingBar(false), 350);  // small delay for nice finish
     }
 
-    // Hide any leftover auth buttons if they exist in DOM
     showEl("authorize_button", false);
     showEl("signout_button", false);
-
     maybeEnableButtons();
   });
 }
+
 
 
 
@@ -959,8 +1005,6 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
       </tr>`;
     }).join("");
   }
-
-
 }
 
 // ====================== Filters & Search ============================

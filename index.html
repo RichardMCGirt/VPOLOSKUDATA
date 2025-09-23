@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Product Portal — Select Items, Add Labor</title>
   <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="loading.css" />
+
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
 </head>
 <body>
@@ -105,11 +107,20 @@
   <div id="toast" role="status" aria-live="polite">Done</div>
 
   <!-- Loading bar -->
-  <div class="loading-bar-overlay" id="loadingBarOverlay" style="display:none;">
-    <div class="loading-bar-container" id="loadingBarContainer">
+<!-- Loading bar -->
+<div class="loading-bar-overlay" id="loadingBarOverlay" style="display:none;">
+  <div class="loading-bar-container" id="loadingBarContainer" role="status" aria-live="polite" aria-atomic="true">
+    <p class="loading-title" id="loadingBarLabel">Starting…</p>
+    <div class="loading-bar-track">
       <div class="loading-bar" id="loadingBar"></div>
     </div>
+    <div class="loading-meta">
+      <span class="loading-dot" aria-hidden="true"></span>
+      <span id="loadingBarMeta">Initializing</span>
+    </div>
   </div>
+</div>
+
 <div id="gentleModeRow" class="row-gap" style="margin:6px 0 10px 0; display:none;">
   <label style="display:inline-flex;align-items:center;gap:8px;font-size:0.9rem;">
     <input id="gentleMode" type="checkbox" checked /> Gentle mode (prevent 429s)
@@ -121,6 +132,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
 <script src="database.js"></script>
+
 
 <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()" async defer></script>
 <script src="https://accounts.google.com/gsi/client" onload="gisLoaded()" async defer></script>
