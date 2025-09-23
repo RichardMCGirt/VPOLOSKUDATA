@@ -5,21 +5,13 @@ function setExpectedRowCount(n){
   try { localStorage.setItem('EXPECTED_ROW_COUNT', String(n)); }
   catch {}
 }
-function setControlsEnabledState(){
-  // Only enable after the full dataset is ready
-  const ready = !!FULLY_LOADED;
-  setDisabled("searchInput", !ready);
-  setDisabled("vendorFilter", !ready);
-  setDisabled("categoryFilter", !ready);
-  setDisabled("clearFilters", !ready);
-}
 
 function verifyRecordCount(){
   try {
     const expected = EXPECTED_ROW_COUNT || 0;
     const actual = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
     const ok = expected ? (actual === expected) : true;
-   if (ok) { try { FULLY_LOADED = true; setControlsEnabledState(); } catch(_){} }
+    if (ok) { try { FULLY_LOADED = true; setControlsEnabledState(); showProgress(false); } catch(_){} }
     console.log("[verifyRecordCount]", { expected, actual, ok });
 
     // Update status pill if available
@@ -64,186 +56,6 @@ async function __rateLimitGate(){
     await new Promise(r => setTimeout(r, waitMs));
   }
 }
-// ========== Search v2 helpers (tokenized + field-aware) ==========
-
-// Normalize helpers
-function normTxt(s){ return String(s || "").toLowerCase(); }
-function normSKU(s){ return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
-
-// Build (and memoize) a lightweight index per row so matching is fast
-function rowIndex(r){
-  if (r._idx) return r._idx;
-  const skuRaw = String(r.sku || "");
-  const obj = {
-    skuRaw,
-    sku: normSKU(skuRaw),
-    desc: normTxt(r.description),
-    vendor: normTxt(r.vendor),
-    uom: normTxt(r.uom),
-    cat: normTxt(r.category || ""),
-  };
-  obj.hay = `${obj.sku} ${obj.desc} ${obj.vendor} ${obj.uom} ${obj.cat}`;
-  r._idx = obj;
-  return obj;
-}
-
-// Optional macros for “shortcut words” -> multiple real terms
-const SEARCH_MACROS = {
-  // Example: ALLROOFNAIL will behave like typing: roof nail
-  "allroofnail": ["roof", "nail"],
-  // Add more shortcuts as needed:
-  // "fasteners": ["screw","nail","staple","bolt","washer","anchor"]
-};
-
-// Tokenize: quotes for phrases, space = AND, "|" inside a token = OR group.
-// Supports field filters: sku:, desc:, vendor:, uom:, cat:
-// Supports leading "-" to exclude.
-function parseQuery(q){
-  const raw = String(q || "").trim();
-  if (!raw) return { pos:[], ors:[], neg:[], fields:{} };
-
-  const m = raw.match(/"([^"]+)"|\S+/g) || [];
-  const pos = [];           // plain positive tokens (AND)
-  const ors = [];           // array of [alt1,alt2,...]
-  const neg = [];           // negative tokens (exclude)
-  const fields = { sku:[], desc:[], vendor:[], uom:[], cat:[] };
-
-  function pushMacroOrToken(token, bucket){
-    const t = token.toLowerCase();
-    if (SEARCH_MACROS[t]) {
-      // expand macro into multiple words (AND each)
-      for (const expanded of SEARCH_MACROS[t]) bucket.push(expanded.toLowerCase());
-    } else {
-      bucket.push(t);
-    }
-  }
-
-  for (let tok of m){
-    if (tok.startsWith('"') && tok.endsWith('"')) {
-      tok = tok.slice(1, -1);
-    }
-
-    // Exclusion
-    if (tok.startsWith("-")) {
-      const t = tok.slice(1);
-      if (!t) continue;
-      // fielded exclusion?
-      const f = t.match(/^(\w+):(.*)$/);
-      if (f && fields[f[1]?.toLowerCase()]) {
-        fields[f[1].toLowerCase()].push({ v: f[2].toLowerCase(), not: true });
-      } else {
-        neg.push(t.toLowerCase());
-      }
-      continue;
-    }
-
-    // Fielded token
-    const mField = tok.match(/^(\w+):(.*)$/);
-    if (mField && fields[mField[1]?.toLowerCase()]) {
-      const f = mField[1].toLowerCase();
-      const val = mField[2].toLowerCase();
-      // allow OR within field token: vendor:lansing|abc
-      if (val.includes("|")){
-        fields[f].push({ or: val.split("|").map(s=>s.trim()).filter(Boolean) });
-      } else {
-        fields[f].push({ v: val });
-      }
-      continue;
-    }
-
-    // OR group (unfielded)
-    if (tok.includes("|")) {
-      const alts = tok.split("|").map(s=>s.toLowerCase().trim()).filter(Boolean);
-      if (alts.length) ors.push(alts);
-      continue;
-    }
-
-    // Plain positive
-    pushMacroOrToken(tok, pos);
-  }
-
-  return { pos, ors, neg, fields };
-}
-
-// Checks a single token against a haystack with basic wildcards.
-// - If token ends with "*", treat as prefix match.
-// - If token starts with "^", treat as startsWith (anchor).
-// Otherwise: substring match.
-function tokenMatch(hay, token){
-  if (!token) return true;
-  if (token.endsWith("*")) {
-    const base = token.slice(0, -1);
-    return base ? hay.includes(base) || hay.startsWith(base) : true;
-  }
-  if (token.startsWith("^")) {
-    const base = token.slice(1);
-    return base ? hay.startsWith(base) : true;
-  }
-  return hay.includes(token);
-}
-
-// Field match helper: accepts string OR {v,not} OR {or:[…]} objects
-function fieldMatches(value, cond){
-  const hay = String(value || "");
-  const h = hay.toLowerCase();
-  const hNormSKU = normSKU(hay); // for sku: allow “LV24*” style
-  // Allow matching in either raw-lower or normalized SKU
-  function oneMatch(t){
-    return tokenMatch(h, t) || tokenMatch(hNormSKU, t);
-  }
-  if (cond.or) {
-    // at least one alt must match
-    return cond.or.some(t => oneMatch(t));
-  }
-  if (cond.not) {
-    return !oneMatch(cond.v);
-  }
-  return oneMatch(cond.v);
-}
-
-// Row-level predicate using the parsed structure
-function rowMatches(r, qObj){
-  const idx = rowIndex(r);
-
-  // Fielded filters — all specified fields must match
-  for (const f of Object.keys(qObj.fields)) {
-    const arr = qObj.fields[f];
-    if (!arr || !arr.length) continue;
-    for (const cond of arr) {
-      let ok = true;
-      if (f === "sku")   ok = fieldMatches(idx.skuRaw, cond) || fieldMatches(idx.sku, cond);
-      else if (f === "desc")  ok = fieldMatches(idx.desc, cond);
-      else if (f === "vendor") ok = fieldMatches(idx.vendor, cond);
-      else if (f === "uom")    ok = fieldMatches(idx.uom, cond);
-      else if (f === "cat")    ok = fieldMatches(idx.cat, cond);
-      if (!ok) return false;
-    }
-  }
-
-  // Must contain all positive tokens (AND)
-  for (const t of qObj.pos) {
-    // check across the combo hay including normalized sku
-    const ok = tokenMatch(idx.hay, t) || tokenMatch(idx.sku, t);
-    if (!ok) return false;
-  }
-
-  // OR groups — each group must match at least one alt
-  for (const group of qObj.ors) {
-    let ok = false;
-    for (const alt of group) {
-      if (tokenMatch(idx.hay, alt) || tokenMatch(idx.sku, alt)) { ok = true; break; }
-    }
-    if (!ok) return false;
-  }
-
-  // Negatives — none may match
-  for (const t of qObj.neg) {
-    if (tokenMatch(idx.hay, t) || tokenMatch(idx.sku, t)) return false;
-  }
-
-  return true;
-}
-
 
 /** Exponential backoff with jitter for 429/5xx */
 function __backoffDelay(attempt){
@@ -712,8 +524,10 @@ function gapiLoaded() {
     // Authless: enable controls and load data immediately
     try {
       // Enable UI you previously disabled until sign-in
-          setControlsEnabledState();
-
+      setDisabled("searchInput", false);
+      setDisabled("vendorFilter", false);
+      setDisabled("categoryFilter", false);
+      setDisabled("clearFilters", false);
 
       showEl("table-container", false);
       showEl("loadingBarOverlay", true);
@@ -1062,6 +876,7 @@ function refreshCategoriesFromAllRows() {
 }
 
 function applyFilters(opts = {}){
+
   // UI gates: require interaction + (optionally) full fetch before showing table
   try {
     if (RENDER_ONLY_AFTER_INTERACTION && !USER_INTERACTED) {
@@ -1070,68 +885,72 @@ function applyFilters(opts = {}){
       return;
     }
     if (RENDER_ONLY_AFTER_FULL_FETCH && !FULLY_LOADED) {
+      // Keep the table hidden and show status while we finish fetching
       showEl && showEl('table-container', false);
       updateDataStatus && updateDataStatus('loading', 'Fetching all records…');
       return;
     }
-  } catch(_){}
-
+  } catch(_) {}
   const { render = true, sort = "alpha" } = opts;
 
-  // Hide table if nothing is selected/searched
-  if (!hasAnyActiveFilter()){
+  
+  // Only show table when at least one filter/search is active
+  if (!hasAnyActiveFilter()) {
     try {
       const table = document.getElementById('data-table') || ensureTable();
       const tbody = table.querySelector('tbody');
       if (tbody) tbody.innerHTML = '';
       showEl && showEl('table-container', false);
-      toggleBgHint && toggleBgHint();
-    } catch(_){}
+  toggleBgHint();
+    } catch(_) {}
     FILTERED_ROWS = [];
     return;
   } else {
-    showEl && showEl("table-container", true);
+    showEl && showEl("table-container", hasAnyActiveFilter());
   }
+const beforeCount = (typeof FILTERED_ROWS !== 'undefined' && Array.isArray(FILTERED_ROWS))
+    ? FILTERED_ROWS.length : 0;
+  dbg("[applyFilters] before:", beforeCount, "ALL_ROWS:", (Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0));
 
-  const qRaw = (document.getElementById("searchInput")?.value || "").trim();
+  const q    = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
   const vSel = (document.getElementById("vendorFilter")?.value || "");
   const cSel = ACTIVE_CATEGORY || (document.getElementById("categoryFilter")?.value || "");
-  const qObj = parseQuery(qRaw);
 
   // Compute only — do not touch DOM here
   const filtered = (ALL_ROWS || []).filter(r => {
-    // Respect vendor & category even when searching
-    if (vSel && r.vendor !== vSel) return false;
-    if (cSel && (r.category || "Misc") !== cSel) return false;
+   const hasQuery      = !!q;
+const matchesVendor = hasQuery ? true : (!vSel || r.vendor === vSel);
+const matchesCat    = hasQuery ? true : (!cSel || r.category === cSel);
+const hay = `${r.sku} ${r.description} ${r.vendor} ${r.uom}`.toLowerCase();
+const matchesQuery  = !q || hay.includes(q);
+return matchesVendor && matchesCat && matchesQuery;
 
-    // No search text? pass
-    if (!qRaw) return true;
-
-    // Advanced matcher over row
-    return rowMatches(r, qObj);
   });
 
   let arr = filtered.slice();
+
   if (sort === "alpha"){
+    // Your old alpha comparator
     arr.sort((a,b) =>
       (a.category || "").localeCompare(b.category || "") ||
       a.description.localeCompare(b.description) ||
       a.sku.localeCompare(b.sku)
     );
   } else {
-    // preserve ingestion order while background pages load
+    // "stable" = preserve ingestion order while background pages load
     arr.sort((a,b) => (a._seq || 0) - (b._seq || 0));
   }
 
   FILTERED_ROWS = arr;
-  if (!render) return;
 
+  if (!render) return; // background path ends here
+
+  // Foreground renders use chunked append for smoothness
   const table = document.getElementById('data-table') || ensureTable();
   const tbody = table.querySelector('tbody');
   if (tbody) tbody.innerHTML = '';
   renderTableAppendChunked(FILTERED_ROWS, 0);
 }
-
 
 
 // ====================== Cart ============================
@@ -1674,7 +1493,7 @@ async function preloadAllPages() {
       if (BACKGROUND_PAGE_DELAY_MS) await sleep(BACKGROUND_PAGE_DELAY_MS);
     }
     FULLY_LOADED = true;
-    setControlsEnabledState();
+    try { setControlsEnabledState(); showProgress(false); } catch{}
     updateDataStatus && updateDataStatus("fresh", "Up to date • " + new Date().toLocaleTimeString());
   } catch (e) {
     console.error("[preloadAllPages] failed", e);
@@ -1699,6 +1518,7 @@ function renderTableAppendChunked(rows, startIdx = 0){
 // ====================== Main Flow ========================
 async function listSheetData() {
   try { FULLY_LOADED = false; } catch(_) {}
+  try { ensureProgressUI(); showProgress(true); updateProgressBar(Array.isArray(ALL_ROWS)?ALL_ROWS.length:0, (typeof EXPECTED_ROW_COUNT!=='undefined'&&EXPECTED_ROW_COUNT)||0); setControlsEnabledState(); } catch{};
   dbg("[listSheetData] starting lazy load. Resetting state.");
 
   // 0) Show cached immediately, then revalidate
@@ -1737,10 +1557,9 @@ await loadNextPage();
   // 3) Prefetch next window quickly
   setTimeout(() => { loadNextPage().catch(() => {}); }, 0);
 
-  // 4) Enable controls
+  // 4) Keep controls disabled until FULLY_LOADED
 setControlsEnabledState();
-
-  if (typeof wireControlsOnce === "function") wireControlsOnce();
+if (typeof wireControlsOnce === "function") wireControlsOnce();
   if (typeof applyRestoreAfterDataLoad === "function") applyRestoreAfterDataLoad();
   setupInfiniteScroll && setupInfiniteScroll();
 
@@ -1841,6 +1660,69 @@ function setDisabled(id, isDisabled) {
   el.disabled = !!isDisabled;
 }
 
+
+// === Controls & Progress Helpers (injected) ==================================
+function setControlsEnabledState(){
+  try {
+    const ready = !!FULLY_LOADED;
+    setDisabled("searchInput", !ready);
+    setDisabled("vendorFilter", !ready);
+    setDisabled("categoryFilter", !ready);
+    setDisabled("clearFilters", !ready);
+    setDisabled("refreshData", !ready);
+  } catch {}
+}
+
+(function ensureProgressCSS(){
+  if (document.getElementById("progressCSS")) return;
+  const css = `
+  #load-progress{display:none;position:relative;margin:8px 0 12px 0;padding:6px 10px;border:1px solid rgba(0,0,0,.1);border-radius:10px;background:rgba(0,0,0,.03)}
+  #load-progress .bar{height:10px;border-radius:8px;background:rgba(0,0,0,.07);overflow:hidden}
+  #load-progress .inner{height:100%;width:0%;background:linear-gradient(90deg, rgba(0,0,0,.35), rgba(0,0,0,.2));transition:width .25s ease}
+  #load-progress .label{display:inline-block;margin-top:6px;font-size:.85rem;opacity:.8}
+  `;
+  const style = document.createElement("style");
+  style.id = "progressCSS";
+  style.textContent = css;
+  document.head.appendChild(style);
+})();
+
+function ensureProgressUI(){
+  try {
+    if (document.getElementById("load-progress")) return;
+    const wrap = document.createElement("div");
+    wrap.id = "load-progress";
+    wrap.setAttribute("role","status");
+    wrap.setAttribute("aria-live","polite");
+    wrap.innerHTML = `<div class="bar"><div class="inner" id="progressInner"></div></div>
+      <div class="label"><span id="progressCount">0</span> / <span id="progressTotal">?</span> loaded</div>`;
+    // Insert near the top of page controls if present, else at body start
+    const controls = document.getElementById("controls") || document.getElementById("header-controls");
+    if (controls && controls.parentNode) controls.parentNode.insertBefore(wrap, controls.nextSibling);
+    else document.body.insertBefore(wrap, document.body.firstChild);
+  } catch {}
+}
+
+function showProgress(show){
+  try {
+    const el = document.getElementById("load-progress");
+    if (!el) return;
+    el.style.display = show ? "block" : "none";
+  } catch {}
+}
+
+function updateProgressBar(current, total){
+  try {
+    ensureProgressUI();
+    const inner = document.getElementById("progressInner");
+    const cEl = document.getElementById("progressCount");
+    const tEl = document.getElementById("progressTotal");
+    if (cEl) cEl.textContent = String(current || 0);
+    if (tEl) tEl.textContent = total ? String(total) : "?";
+    const pct = (total && total > 0) ? Math.max(0, Math.min(100, Math.round((current/total)*100))) : null;
+    if (inner) inner.style.width = (pct==null ? "20%" : pct + "%");
+  } catch {}
+}
 // Auto-refresh every 5 minutes if signed in
 setInterval(() => {
   const signedIn = !!gapi.client.getToken()?.access_token;
@@ -2092,7 +1974,9 @@ async function loadNextPage() {
     if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
     Array.prototype.push.apply(ALL_ROWS, windowRows);
 
-    // Keep cart prices in sync with latest rows (if cart exists)
+    
+    try { updateProgressBar(Array.isArray(ALL_ROWS)?ALL_ROWS.length:0, (typeof EXPECTED_ROW_COUNT!=='undefined'&&EXPECTED_ROW_COUNT)||0); } catch{}
+// Keep cart prices in sync with latest rows (if cart exists)
     if (typeof reconcileCartWithCatalog === 'function') {
       try { reconcileCartWithCatalog(ALL_ROWS); } catch (e) { console.warn("[cart reconcile] err", e); }
     }
