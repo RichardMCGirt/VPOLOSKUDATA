@@ -4,17 +4,174 @@ const RL_INTERVAL_MS = 60_000;   // sliding 1-minute window
 let __rl_timestamps = [];        // timestamps of recent calls
 
 // ---- Loading overlay / quiescence globals (safe defaults) ----
-let __INFLIGHT = 0;              // active network calls
-let __ROWS_DONE = false;         // set true when pager detects end-of-data
-let __OVERLAY_SHOWN_AT = 0;      // timestamp when overlay was shown
-let __OVERLAY_HIDDEN = false;    // guard to prevent double-hide
-let __LAST_ACTIVITY_TS = 0;      // last time we touched data from network
+// ===== Network + loading overlay coordination =====
+let __INFLIGHT = 0;          // active network calls
+let __ROWS_DONE = false;     // set true when pagination is finished
+let __OVERLAY_SHOWN_AT = 0;
+let __OVERLAY_HIDDEN = false;
+let __LAST_ACTIVITY_TS = 0;
+const OVERLAY_MIN_MS  = 1200;   // minimum visible time
+const QUIET_WINDOW_MS = 800;    // time of silence before hide
 
-const OVERLAY_MIN_MS  = 1200;    // keep overlay visible at least this long
-const QUIET_WINDOW_MS = 800;     // must be quiet this long before hiding
+function __noteActivity(){ __LAST_ACTIVITY_TS = Date.now(); }
+function $(id){ return document.getElementById(id); }
+function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
 
-// ---- Expected row count (resilient default) ----
-let EXPECTED_ROW_COUNT = 0;
+let __maxPct = 0;
+function setOverlayVisible(show){
+  const ov = $("loadingBarOverlay"); if (!ov) return;
+  ov.style.display = show ? "flex" : "none";
+  try { document.body.style.overflow = show ? "hidden" : ""; } catch {}
+}
+function setBar(pct){
+  const bar = $("loadingBar");
+  if (bar){
+    const p = clamp(pct|0, 0, 100);
+    bar.style.width = p + "%";
+    try { bar.parentElement?.parentElement?.setAttribute("aria-valuenow", String(p)); } catch {}
+  }
+}
+function setLabel(label){
+  if (label == null) return;
+  const lbl = $("loadingBarLabel"), meta = $("loadingBarMeta");
+  if (lbl)  lbl.textContent  = String(label);
+  if (meta) meta.textContent = String(label);
+}
+
+window.showLoadingBar = function(show, label=""){
+  setOverlayVisible(show);
+  if (show){
+    __OVERLAY_SHOWN_AT = Date.now();
+    __OVERLAY_HIDDEN   = false;
+    __INFLIGHT = 0;
+    __ROWS_DONE = false;
+    __maxPct = 0;
+    setBar(5);
+    setLabel(label || "Starting…");
+    __noteActivity();
+  }
+};
+window.bumpLoadingTo = function(percent=0, label){
+  __maxPct = Math.max(__maxPct, clamp(percent|0, 0, 100));
+  if (label != null) setLabel(label);
+  setBar(__maxPct);
+};
+
+// Only hide when: paging done + no inflight + quiet + min visible elapsed
+function __maybeHideOverlay(){
+  const now = Date.now();
+  const minShown = (now - __OVERLAY_SHOWN_AT) >= OVERLAY_MIN_MS;
+  const quiet    = (now - __LAST_ACTIVITY_TS) >= QUIET_WINDOW_MS;
+  if (!__ROWS_DONE) return;
+  if (__INFLIGHT > 0) return;
+  if (!quiet) return;
+  if (!minShown){
+    setTimeout(__maybeHideOverlay, OVERLAY_MIN_MS - (now - __OVERLAY_SHOWN_AT));
+    return;
+  }
+  if (__OVERLAY_HIDDEN) return;
+  __OVERLAY_HIDDEN = true;
+  try { bumpLoadingTo(100, "All records loaded"); } catch {}
+  try { showLoadingBar(false); } catch {}
+}
+
+function trackAsync(promiseLike){
+  __INFLIGHT++;
+  return Promise.resolve(promiseLike)
+    .finally(() => {
+      __INFLIGHT--;
+      __noteActivity();
+      setTimeout(__maybeHideOverlay, 0);
+    });
+}
+let EXPECTED_ROW_COUNT = Number(localStorage.getItem("EXPECTED_ROW_COUNT")||0) || 0;
+function setExpectedRowCount(n){
+  EXPECTED_ROW_COUNT = Math.max(0, Number(n)||0);
+  try { localStorage.setItem("EXPECTED_ROW_COUNT", String(EXPECTED_ROW_COUNT)); } catch {}
+}
+function getExpectedRowCount(){ return EXPECTED_ROW_COUNT || 0; }
+
+function updateProgressLabelFromCounts(actual){
+  const exp = getExpectedRowCount();
+  if (exp > 0){
+    const pct = Math.max(6, Math.min(95, Math.floor((actual / exp) * 100)));
+    bumpLoadingTo(pct, `Loading ${actual} / ${exp}…`);
+  } else {
+    // Unknown total: stay under 90% and climb slowly per page
+    const base = Math.min(90, 5 + Math.floor(actual / 800)); // tune
+    bumpLoadingTo(base, `Loading ${actual}…`);
+  }
+}
+async function loadNextPage(){
+  if (_isLoadingPage || _noMorePages) return;
+  _isLoadingPage = true;
+
+  try {
+    // wrap the fetch in the tracker so __INFLIGHT is accurate
+    const windowRows = await trackAsync(fetchRowsWindow(_pageCursor, VIRTUAL_PAGE_SIZE));
+
+    // If your transform is async, also track it. If sync, call directly.
+    const transformed = transformWindowRows(windowRows);  // or await trackAsync(transformWindowRows(...))
+
+    const startLen = ALL_ROWS.length;
+    if (transformed && transformed.length){
+      for (let i = 0; i < transformed.length; i++) transformed[i]._seq = startLen + i;
+      ALL_ROWS.push(...transformed);
+    }
+
+    // If we got fewer than requested, we just hit the last page.
+    // That means we can compute the total (if we didn’t know it).
+    if (windowRows.length < VIRTUAL_PAGE_SIZE){
+      const discoveredTotal = ALL_ROWS.length; // current actual is final
+      if (!getExpectedRowCount()){
+        setExpectedRowCount(discoveredTotal);
+      }
+      _noMorePages = true;
+      __ROWS_DONE  = true;          // <---- paging is finished
+    }
+
+    // If we explicitly got 0 rows, we’re definitely done.
+    if (windowRows.length === 0){
+      if (!getExpectedRowCount()){
+        setExpectedRowCount(ALL_ROWS.length);
+      }
+      _noMorePages = true;
+      __ROWS_DONE  = true;          // <---- paging is finished
+    }
+
+    // Update visible progress every page
+    updateProgressLabelFromCounts(ALL_ROWS.length);
+    verifyRecordCount?.();
+
+    // Advance the cursor if we’re not done
+    if (!_noMorePages) _pageCursor++;
+
+  } catch (e){
+    console.error("[loadNextPage] error", e);
+    throw e;
+  } finally {
+    _isLoadingPage = false;
+    // Re-evaluate whether we can hide (only hides when done+quiet+no inflight)
+    setTimeout(__maybeHideOverlay, 0);
+  }
+}
+
+(function(){
+  const __origFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init){
+    try {
+      const url = (typeof input === "string") ? input : (input && input.url) ? input.url : "";
+      if (url && url.includes("content-sheets.googleapis.com/v4/spreadsheets/")){
+        const data = await fetchJSON429(url, init || {});
+        return new Response(new Blob([JSON.stringify(data)], {type:"application/json"}), { status:200 });
+      }
+    } catch(e){
+      console.warn("[fetch wrapper] error", e);
+      throw e;
+    }
+    return __origFetch(input, init);
+  };
+})();
 
 function setExpectedRowCount(n){
   try {
@@ -59,12 +216,6 @@ async function __rateLimitGate(){
     const meta = $("loadingBarMeta");
     if (meta && label != null) meta.textContent = String(label);
   }
-  function setOverlayVisible(show){
-    const ov = $("loadingBarOverlay"); // 
-    if (!ov) return;
-    ov.style.display = show ? "flex" : "none";
-    try { document.body.style.overflow = show ? "hidden" : ""; } catch {}
-  }
 
 // Wherever showLoadingBar is defined
 window.showLoadingBar = function(show, label=""){
@@ -82,7 +233,6 @@ window.showLoadingBar = function(show, label=""){
   }
 };
 
-
   window.setLoadingBar = function(percent = 0, label){
     if (label != null) setLabel(label);
     __maxPct = clamp(percent|0, 0, 100);
@@ -95,14 +245,6 @@ window.showLoadingBar = function(show, label=""){
     setBar(__maxPct);
   };
 })();
-
-// ===== Loading overlay quiescence gate =====
-// ============================
-// 429-aware fetch wrapper
-// ============================
-
-// ---- Quiescence + overlay hooks (no-ops if you don't have them yet)
-
 
 function __noteActivity(){ __LAST_ACTIVITY_TS = Date.now(); }
 
@@ -122,14 +264,9 @@ function __maybeHideOverlay(reason = ""){
   try { if (typeof bumpLoadingTo === "function") bumpLoadingTo(100, "All records loaded"); } catch {}
   try { if (typeof showLoadingBar === "function") showLoadingBar(false); } catch {}
   try { if (typeof setControlsEnabledState === "function") setControlsEnabledState(); } catch {}
-  // console.debug("[loading] overlay hidden", reason);
+  console.debug("[loading] overlay hidden", reason);
 }
 
-// ---- Local, conservative client-side rate limiting (helps avoid 429 bursts)
-
-
-
-// ---- Small helpers
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
 async function parseBody(res){
@@ -224,9 +361,6 @@ function setControlsEnabledState(){
   setDisabled("categoryFilter", !ready);
   setDisabled("clearFilters", !ready);
 }
-
-// globals near the top of database.js
-
 
 function verifyRecordCount(){
   try {
@@ -566,7 +700,6 @@ async function fetchJSON429(url, init={}
   throw lastErr || new Error("fetchJSON429 exhausted retries");
 }
 
-// Generic retry helper for transient fetch errors
 // Generic retry helper for transient fetch errors
 async function withRetry(fn, attempts = 3, baseDelayMs = 200){
   let lastErr;
@@ -938,47 +1071,105 @@ function categorizeDescription(desc = "") {
   }
   return "Misc";
 }
+async function fetchJSON(url, init){
+  return trackAsync(
+    fetch(url, init).then(async (res) => {
+      __noteActivity();
+      if (!res.ok){
+        const t = await res.text().catch(()=> "");
+        throw new Error(`HTTP ${res.status} ${res.statusText}\n${t}`);
+      }
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")){
+        return res.json();
+      }
+      const txt = await res.text();
+      try { return JSON.parse(txt); } catch { return txt; }
+    })
+  );
+}
 
 // =============== Bootstrap GAPI (Sheets v4) ===============
-function gapiLoaded() {
-  try{showLoadingBar(true,"Initializing…");}catch{} try{bumpLoadingTo(10,"Connecting to Sheets API…");}catch{} try { showLoadingBar(true, "Initializing…"); } catch {}
-  try { bumpLoadingTo(10, "Connecting to Sheets API…"); } catch {}
-
+async function gapiLoaded() {
+  // Kick off the Google API client load
   gapi.load("client", async () => {
-    await gapi.client.init({
-      apiKey: API_KEY,
-      discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
-    });
-    gapiInited = true;
-
     try {
-      setControlsEnabledState();
+      // 0) Init Sheets API client
+      showLoadingBar(true, "Initializing…");
+      bumpLoadingTo(8, "Loading Google API client…");
 
-      showLoadingBar(true, "Initializing…");       // NEW
-      bumpLoadingTo(10, "Connecting to Sheets API…");
+      await gapi.client.init({
+        apiKey: (typeof API_KEY !== "undefined") ? API_KEY : "",
+        discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
+      });
 
-      // If you need header/meta first, you could bump to ~25% here.
+      // 1) Mark gapi ready and set initial UI state
+      if (typeof gapiInited !== "undefined") {
+        gapiInited = true;
+      } else {
+        // define if not present to avoid ReferenceError in some builds
+        window.gapiInited = true;
+      }
+
+      if (typeof setControlsEnabledState === "function") {
+        setControlsEnabledState(); // typically disables actions until data is present
+      }
+
+      // Optional: hide any auth button if you're in no-login mode
+      try {
+        (typeof showEl === "function") && showEl("authorize_button", false);
+      } catch {}
+
+      // 2) Begin data load (multi-page). Don’t hide overlay here; quiescence will.
+      bumpLoadingTo(15, "Connecting to Sheets API…");
+
+      // If you know your expected total, set it now (persists across sessions).
+      // Example: setExpectedRowCount(12709);
+      // Otherwise, the pager will discover it when the last short page/0 page arrives.
 
       bumpLoadingTo(25, "Fetching product data…");
-      bumpLoadingTo(25, "Fetching product data…");
-      bumpLoadingTo(25,"Fetching product data…"); await listSheetData(); bumpLoadingTo(85,"Finalizing table…");
-      bumpLoadingTo(85, "Finalizing table…");                       // your existing call
+      // listSheetData should repeatedly call loadNextPage(), which:
+      // - updates ALL_ROWS
+      // - calls updateProgressLabelFromCounts(ALL_ROWS.length)
+      // - sets __ROWS_DONE = true once the last short/0 page is detected
+      await listSheetData();
 
-      // When listSheetData returns, we likely transformed rows.
+      // 3) Final UI work after rows are in memory (render, indexing, etc.)
       bumpLoadingTo(85, "Finalizing table…");
+      try {
+        // If you need to render table, apply filters, etc., do it here.
+        if (typeof applyFilters === "function") {
+          applyFilters({ render: true, sort: "stable" });
+        }
+      } catch (e) {
+        console.warn("[gapiLoaded] post-load render warning:", e);
+      }
+
+      // Optional: enable controls now that data exists
+      if (typeof setControlsEnabledState === "function") {
+        setControlsEnabledState();
+      }
+
+      // NOTE: Do not force-hide the overlay here.
+      // The quiescence gate (__maybeHideOverlay) will hide only when:
+      // __ROWS_DONE === true && __INFLIGHT === 0 && quiet window elapsed.
+      setTimeout(() => {
+        try { /* ping quiescence in case everything is already quiet */ __maybeHideOverlay(); } catch {}
+      }, 0);
 
     } catch (e) {
       console.error("Error loading sheet (no-login mode):", e);
-      showToast("Error loading sheet (see console).");
-    } finally {
-
+      try {
+        setLabel("Error loading data — see console");
+      } catch {}
+      // Still let the gate decide when to hide; we might have inflight retries, etc.
+      setTimeout(() => {
+        try { __maybeHideOverlay(); } catch {}
+      }, 0);
     }
-
-    showEl("authorize_button", false);
-    showEl("signout_button", false);
-    maybeEnableButtons();
   });
 }
+
 
 
 
