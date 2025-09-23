@@ -299,7 +299,10 @@ function persistCart() {
 
 // Whenever you add/remove/clear items:
 persistCart();
-
+ document.addEventListener('DOMContentLoaded', () => {
+    const row = document.getElementById('gentleModeRow');
+    if (row) row.hidden = true; // same as display:none
+  });
 function maybeEnableButtons() {
   const authBtn    = document.getElementById("authorize_button");
   const signoutBtn = document.getElementById("signout_button");
@@ -780,12 +783,15 @@ function hasAnyActiveFilter(){
   try {
     const q = (document.getElementById("searchInput")?.value || "").trim();
     const v = (document.getElementById("vendorFilter")?.value || "");
-    const c = (typeof ACTIVE_CATEGORY !== "undefined" && ACTIVE_CATEGORY) ? ACTIVE_CATEGORY : (document.getElementById("categoryFilter")?.value || "");
-    return !!(q || v || c);
-  } catch(_) {
+    const c = (typeof window.ACTIVE_CATEGORY !== "undefined" && window.ACTIVE_CATEGORY)
+      ? window.ACTIVE_CATEGORY
+      : (document.getElementById("categoryFilter")?.value || "");
+    return Boolean(q || v || c);
+  } catch {
     return false;
   }
 }
+
 
 function toggleBgHint() {
   try {
@@ -817,32 +823,58 @@ function populateCategoryFilter(rows) {
 function renderCategoryChips() {
   const wrap = document.getElementById("categoryChips");
   if (!wrap) return;
+
   wrap.innerHTML = "";
+
+  // "All" chip
   const all = document.createElement("button");
-  all.className = "chip" + (ACTIVE_CATEGORY ? "" : " active");
+  all.className = "chip" + (window.ACTIVE_CATEGORY ? "" : " active");
   all.textContent = "All";
   all.setAttribute("data-cat", "");
   wrap.appendChild(all);
 
-  for (const c of ALL_CATEGORIES) {
+  // Category chips
+  for (const c of (window.ALL_CATEGORIES || [])) {
     const btn = document.createElement("button");
-    btn.className = "chip" + (c === ACTIVE_CATEGORY ? " active" : "");
+    btn.className = "chip" + (c === window.ACTIVE_CATEGORY ? " active" : "");
     btn.textContent = c;
     btn.setAttribute("data-cat", c);
     wrap.appendChild(btn);
   }
-  showEl("categoryChips", true);
 
-  wrap.onclick = (ev) => {
-    const chip = ev.target.closest(".chip");
+  // Click handler (single delegate)
+  wrap.onclick = (e) => {
+    const chip = e.target.closest(".chip");
     if (!chip) return;
-    ACTIVE_CATEGORY = chip.getAttribute("data-cat") || "";
+
+    window.ACTIVE_CATEGORY = chip.getAttribute("data-cat") || "";
     const sel = document.getElementById("categoryFilter");
-    if (sel) sel.value = ACTIVE_CATEGORY;
-    Array.from(wrap.querySelectorAll(".chip")).forEach(c => c.classList.toggle("active", c === chip));
-applyFilters({ render: false, sort: "stable" });
+    if (sel) sel.value = window.ACTIVE_CATEGORY;
+
+    // If you use the “show only after interaction” gate:
+    try { window.USER_INTERACTED = true; } catch {}
+
+    // Visual active state
+    Array.from(wrap.querySelectorAll(".chip"))
+      .forEach(el => el.classList.toggle("active", el === chip));
+
+    // Re-filter (stable so results don’t jump)
+    applyFilters({ render: true, sort: "stable" });
   };
 }
+
+function refreshCategoriesFromAllRows() {
+  const cats = Array.from(new Set((window.ALL_ROWS || []).map(r => r.category || "Misc")))
+    .sort((a,b)=>a.localeCompare(b));
+  window.ALL_CATEGORIES = cats;
+  const sel = document.getElementById("categoryFilter");
+  if (sel) {
+    sel.innerHTML = `<option value="">All categories</option>` +
+      cats.map(c => `<option value="${c}">${c}</option>`).join("");
+  }
+  renderCategoryChips();
+}
+
 function applyFilters(opts = {}){
 
   // UI gates: require interaction + (optionally) full fetch before showing table
