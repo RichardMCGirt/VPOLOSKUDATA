@@ -7,6 +7,7 @@
    - Renders cart from localStorage, supports inline qty/margin edits, per-row remove, and Clear All
    - Broadcasts cart changes to other tabs (index.html) using BroadcastChannel "vanir_cart_bc"
    - NEW: Full Labor UI — add/edit/remove rows, persists to localStorage, updates totals
+   - NEW: Branch dropdown filters out options that are NOT likely US cities (heuristic)
    Requires: airtable.service.js
 */
 (function () {
@@ -35,6 +36,14 @@
       style: "currency", currency: "USD"
     });
   }
+function toNumberLoose(val) {
+  if (val == null) return 0;
+  const s = String(val).replace(/[^0-9.+-]/g, ""); // strip $, %, spaces, etc.
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+
   function itemUnitSell(item) {
     const pct = Math.max(0, Number(item?.marginPct ?? 30) || 0);
     return (Number(item.unitBase) || 0) * (1 + pct / 100);
@@ -151,6 +160,63 @@
     }
   }
 
+  // ---------- US City filter (heuristic) ----------
+  // NOTE: This is a fast client-side filter to drop obvious non-city options.
+  // If you want to enforce a strict allowlist, put names in ALLOWLIST_CITIES below.
+  const US_STATE_ABBR = new Set([
+    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
+    "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
+    "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+    "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
+    "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"
+  ]);
+
+  // Optional: keep this empty to allow any plausible US city; add names to hard-restrict.
+  const ALLOWLIST_CITIES = new Set([
+    // Example (from your branches): "Raleigh","Charleston","Greensboro","Myrtle Beach","Wilmington","Columbia","Charlotte","Greenville"
+  ]);
+
+  // Reject if label contains obvious non-city signals.
+  const NON_CITY_KEYWORDS = /\b(office|division|warranty|calendar|group|inc|llc|corp|company|test|sample|vendor|subcontractor|internal|template)\b/i;
+
+  function isLikelyUSCity(label) {
+    if (!label) return false;
+    const s = String(label).trim();
+    if (!s) return false;
+
+    // Hard allowlist has priority, if configured
+    if (ALLOWLIST_CITIES.size && ALLOWLIST_CITIES.has(s)) return true;
+
+    // Quick rejects
+    if (/[0-9@/\\]|https?:/i.test(s)) return false;       // digits/urls
+    if (/[–—]/.test(s)) return false;                     // em/en dash often joins extra descriptors
+    if (NON_CITY_KEYWORDS.test(s)) return false;
+
+    // Accept patterns: "City", "City City", "City, ST", "City City, ST"
+    const m = s.match(/^(?<city>[A-Za-z .'-]+?)(?:,\s*(?<st>[A-Za-z]{2}))?$/);
+    if (!m) return false;
+
+    const city = (m.groups.city || "").trim();
+    const st = m.groups.st ? m.groups.st.toUpperCase() : null;
+
+    if (!city) return false;
+    if (st && !US_STATE_ABBR.has(st)) return false;
+
+    // City words: 1-3 words, letters plus punctuation
+    const words = city.split(/\s+/).filter(Boolean);
+    if (words.length < 1 || words.length > 3) return false;
+    if (!/^[A-Za-z][A-Za-z .'-]*$/.test(city)) return false;
+
+    return true;
+  }
+
+  function filterToUSCities(options) {
+    const filtered = [];
+    const rejected = [];
+    (options || []).forEach(o => (isLikelyUSCity(o.label) ? filtered : rejected).push(o));
+    return { filtered, rejected };
+  }
+
   async function initDropdowns(service) {
     setStatus("Loading dropdowns…", "info");
     ["branch","fieldMgr","neededBy","reason"].forEach(k => els[k]?.setAttribute("aria-busy","true"));
@@ -161,12 +227,18 @@
         service.fetchBranchOptions(),
       ]);
 
+      // Keep FULL maps (for prefill & fallbacks), but only render filtered branch options
       maps.fieldMgr.idToLabel = fmIdToLabel; maps.fieldMgr.labelToId = fmLabelToId;
       maps.branch.idToLabel   = brIdToLabel; maps.branch.labelToId   = brLabelToId;
 
+      // Field Manager: render as-is
       populateSelectWithPairs(els.fieldMgr, fmOptions.map(o => ({ value: o.id, label: o.label })));
-      populateSelectWithPairs(els.branch,   brOptions.map(o => ({ value: o.id, label: o.label })));
 
+      // Branch: filter to US cities
+      const { filtered: brFiltered /*, rejected*/ } = filterToUSCities(brOptions);
+      populateSelectWithPairs(els.branch, brFiltered.map(o => ({ value: o.id, label: o.label })));
+
+      // Needed By & Reason (from current Fill-In view)
       const { neededBy, reason } = await service.fetchDropdowns({
         branchField: "___ignore_branch___",
         fieldMgrField: "___ignore_fm___",
@@ -186,7 +258,20 @@
     }
   }
 
-  function setSelectFromLinked(selectEl, rawVal, map) {
+  function ensureOption(selectEl, value, label) {
+    if (!selectEl || !value) return;
+    const exists = Array.from(selectEl.options).some(o => o.value === value);
+    if (!exists) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label || value;
+      opt.dataset.nonCity = "true"; // marked as injected (not from filtered list)
+      selectEl.appendChild(opt);
+    }
+    selectEl.value = value;
+  }
+
+  function setSelectFromLinked(selectEl, rawVal, map, { ensureIfMissing = false } = {}) {
     if (!selectEl) return;
     if (Array.isArray(rawVal) && rawVal.length) {
       const id = rawVal[0];
@@ -195,10 +280,21 @@
         const label = map.idToLabel.get(id);
         const fallbackId = label ? map.labelToId.get(label) : null;
         if (fallbackId) selectEl.value = fallbackId;
+        // If still missing (likely filtered out), optionally inject it
+        if (ensureIfMissing && !selectEl.value) {
+          const lab = label || `(ID ${id})`;
+          ensureOption(selectEl, id, lab);
+        }
       }
     } else if (typeof rawVal === "string" && rawVal.trim()) {
       const id = map.labelToId.get(rawVal.trim());
-      if (id) selectEl.value = id;
+      if (id) {
+        selectEl.value = id;
+        if (!selectEl.value && ensureIfMissing) ensureOption(selectEl, id, rawVal.trim());
+      } else if (ensureIfMissing) {
+        // Label known but no ID mapping—inject as best-effort
+        ensureOption(selectEl, rawVal.trim(), rawVal.trim());
+      }
     }
   }
 
@@ -210,8 +306,10 @@
       const f = rec?.fields || {};
 
       if (nonEmpty(f["Customer Name"])) els.customerName.value = f["Customer Name"];
-      setSelectFromLinked(els.branch, f["Branch"], maps.branch);
-      setSelectFromLinked(els.fieldMgr, f["Field Manager"], maps.fieldMgr);
+      // For Branch/Field Manager, ensure current value appears even if filtered out
+      setSelectFromLinked(els.branch,    f["Branch"],        maps.branch,   { ensureIfMissing: true });
+      setSelectFromLinked(els.fieldMgr,  f["Field Manager"], maps.fieldMgr, { ensureIfMissing: true });
+
       if (nonEmpty(f["Needed By"])) els.neededBy.value = Array.isArray(f["Needed By"]) ? String(f["Needed By"][0]) : String(f["Needed By"]);
       if (nonEmpty(f["Reason For Fill In"])) els.reason.value = Array.isArray(f["Reason For Fill In"]) ? String(f["Reason For Fill In"][0]) : String(f["Reason For Fill In"]);
 
@@ -262,98 +360,104 @@
   }
 
   function renderLaborList(state) {
-    const rowsHost = ensureLaborRowsContainer();
-    if (!rowsHost) return;
+  const rowsHost = ensureLaborRowsContainer();
+  if (!rowsHost) return;
 
-    const labor = Array.isArray(state?.labor) ? state.labor : [];
-    if (!labor.length) {
-      rowsHost.innerHTML = `<div class="muted-sm" style="opacity:.8;">No labor lines yet. Click “+ Add Labor Line”.</div>`;
-      return;
-    }
+  const labor = Array.isArray(state?.labor) ? state.labor : [];
+  if (!labor.length) {
+    rowsHost.innerHTML = `<div class="muted-sm" style="opacity:.8;">No labor lines yet. Click “+ Add Labor Line”.</div>`;
+    return;
+  }
 
-    const html = labor.map(l => {
-      const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
-      const rate = Math.max(0, Number(l.rate) || 0);
-      const pct  = Math.max(0, Number(l.marginPct) || 0);
-      const line = qty * rate * (1 + pct / 100);
+  const html = labor.map(l => {
+    const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
+    const rate = Math.max(0, Number(l.rate) || 0);
+    const pct  = Math.max(0, Number(l.marginPct) || 0);
+    const line = qty * rate * (1 + pct / 100);
 
-      return `
-        <div class="card" data-labor-id="${l.id}" style="padding:10px;border:1px solid rgba(0,0,0,.08);border-radius:10px;">
-          <div class="grid" style="grid-template-columns: 2fr 1fr 1fr 1fr auto; gap:8px;">
-            <div class="field">
-              <label class="field-label">Description</label>
-              <input type="text" class="labor-desc" value="${(l.desc ?? "Labor")}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Qty</label>
-              <input type="number" class="labor-qty" min="0" step="1" value="${qty}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Rate</label>
-              <input type="number" class="labor-rate" min="0" step="1" value="${rate}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Margin (%)</label>
-              <input type="number" class="labor-margin" min="0" step="1" value="${pct}" />
-            </div>
-            <div class="field">
-              <label class="field-label">Line Total</label>
-              <div class="nowrap-ellipsize" data-labor-cell="lineTotal" style="padding:10px;border:1px dashed var(--border,#ddd);border-radius:10px;">${formatMoney(line)}</div>
-            </div>
+    return `
+      <div class="card" data-labor-id="${l.id}" style="padding:10px;border:1px solid rgba(0,0,0,.08);border-radius:10px;">
+        <div class="grid" style="grid-template-columns: 2fr 1fr 1fr 1fr auto; gap:8px;">
+          <div class="field">
+            <label class="field-label">Description</label>
+            <input type="text" class="labor-desc" value="${(l.desc ?? "Labor")}" />
           </div>
-          <div class="right" style="margin-top:8px;">
-            <button class="btn danger remove-labor">Remove</button>
+          <div class="field">
+            <label class="field-label">Qty</label>
+            <input type="number" class="labor-qty" min="0" step="1" value="${qty}" />
+          </div>
+          <div class="field">
+            <label class="field-label">Rate</label>
+            <input type="number" class="labor-rate" min="0" step="1" value="${rate}" />
+          </div>
+          <div class="field">
+            <label class="field-label">Margin (%)</label>
+            <input type="number" class="labor-margin" min="0" step="1" value="${pct}" />
+          </div>
+          <div class="field">
+            <label class="field-label">Line Total</label>
+            <div class="money" data-labor-cell="lineTotal">${formatMoney(line)}</div>
           </div>
         </div>
-      `;
-    }).join("");
+        <div class="right" style="margin-top:8px;">
+          <button class="btn danger remove-labor">Remove</button>
+        </div>
+      </div>
+    `;
+  }).join("");
 
-    rowsHost.innerHTML = html;
+  rowsHost.innerHTML = html;
 
-    // Events for each card
-    rowsHost.querySelectorAll(".card[data-labor-id]").forEach(card => {
-      const id = card.getAttribute("data-labor-id");
-      const descEl  = card.querySelector(".labor-desc");
-      const qtyEl   = card.querySelector(".labor-qty");
-      const rateEl  = card.querySelector(".labor-rate");
-      const margEl  = card.querySelector(".labor-margin");
-      const lineBox = card.querySelector('[data-labor-cell="lineTotal"]');
+  // Events for each card (keep recalcAndSave INSIDE this closure so qtyEl/rateEl/margEl are in scope)
+  rowsHost.querySelectorAll(".card[data-labor-id]").forEach(card => {
+    const id     = card.getAttribute("data-labor-id");
+    const descEl = card.querySelector(".labor-desc");
+    const qtyEl  = card.querySelector(".labor-qty");
+    const rateEl = card.querySelector(".labor-rate");
+    const margEl = card.querySelector(".labor-margin");
+    const lineBox = card.querySelector('[data-labor-cell="lineTotal"]');
 
-      function recalcAndSave() {
-        const data  = getSaved();
-        const row   = (data.labor || []).find(x => x.id === id);
-        if (!row) return;
-        const qty  = Math.max(0, Math.floor(Number(qtyEl.value)  || 0));
-        const rate = Math.max(0, Number(rateEl.value)  || 0);
-        const pct  = Math.max(0, Number(margEl.value) || 0);
-        row.desc = String(descEl.value || "Labor");
-        row.qty = qty;
-        row.rate = rate;
-        row.marginPct = pct;
-        setSaved(data);
-        // Update this row's total quickly
-        const line = qty * rate * (1 + pct / 100);
-        lineBox.textContent = formatMoney(line);
-        // Refresh footer totals (products + labor)
-        updateTotalsOnly(data);
-      }
+    function recalcAndSave() {
+      const data = getSaved();
+      const row  = (data.labor || []).find(x => x.id === id);
+      if (!row) return;
 
-      descEl.addEventListener("input", recalcAndSave);
-      qtyEl.addEventListener("input", recalcAndSave);
-      rateEl.addEventListener("input", recalcAndSave);
-      margEl.addEventListener("input", recalcAndSave);
+      // Forgiving parsing (“$45”, “30%”, “  12  ” all work)
+      const qty  = Math.max(0, Math.floor(toNumberLoose(qtyEl.value)));
+      const rate = Math.max(0, toNumberLoose(rateEl.value));
+      const pct  = Math.max(0, toNumberLoose(margEl.value));
 
-      const removeBtn = card.querySelector(".remove-labor");
-      removeBtn.addEventListener("click", () => {
-        const data = getSaved();
-        data.labor = (data.labor || []).filter(x => x.id !== id);
-        setSaved(data);
-        renderLaborList(data);
-        updateTotalsOnly(data);
-        showToast?.("Labor line removed");
-      });
+      row.desc = String(descEl.value || "Labor");
+      row.qty = qty;
+      row.rate = rate;
+      row.marginPct = pct;
+
+      setSaved(data);
+
+      // Update this row’s total quickly
+      const line = qty * rate * (1 + pct / 100);
+      lineBox.textContent = formatMoney(line);
+
+      // Refresh footer totals (products + labor)
+      updateTotalsOnly(data);
+    }
+
+    descEl.addEventListener("input", recalcAndSave);
+    qtyEl.addEventListener("input", recalcAndSave);
+    rateEl.addEventListener("input", recalcAndSave);
+    margEl.addEventListener("input", recalcAndSave);
+
+    const removeBtn = card.querySelector(".remove-labor");
+    removeBtn.addEventListener("click", () => {
+      const data = getSaved();
+      data.labor = (data.labor || []).filter(x => x.id !== id);
+      setSaved(data);
+      renderLaborList(data);
+      updateTotalsOnly(data);
+      showToast?.("Labor line removed");
     });
-  }
+  });
+}
 
   function addLaborLine(defaults = {}) {
     const data = getSaved();
@@ -452,27 +556,29 @@
     };
   }
 
-  function updateTotalsOnly(state) {
-    const products = Array.isArray(state?.cart) ? state.cart : [];
-    const labor    = Array.isArray(state?.labor) ? state.labor : [];
+function updateTotalsOnly(state) {
+  const products = Array.isArray(state?.cart) ? state.cart : [];
+  const labor    = Array.isArray(state?.labor) ? state.labor : [];
 
-    const productsTotal = products.reduce((sum, saved) => {
-      const unit = itemUnitSell(saved);
-      const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
-      return sum + unit * qty;
-    }, 0);
+  const productsTotal = products.reduce((sum, saved) => {
+    const unit = itemUnitSell(saved);
+    const qty = Math.max(0, Math.floor(Number(saved.qty) || 0));
+    return sum + unit * qty;
+  }, 0);
 
-    const laborTotal = labor.reduce((sum, l) => {
-      const qty  = Math.max(0, Math.floor(Number(l.qty) || 0));
-      const rate = Math.max(0, Number(l.rate) || 0);
-      const pct  = Math.max(0, Number(l.marginPct) || 0);
-      return sum + qty * rate * (1 + pct / 100);
-    }, 0);
+  // Use the same forgiving parser the inputs use
+  const laborTotal = labor.reduce((sum, l) => {
+    const qty  = Math.max(0, Math.floor(toNumberLoose(l.qty)));
+    const rate = Math.max(0, toNumberLoose(l.rate));
+    const pct  = Math.max(0, toNumberLoose(l.marginPct));
+    return sum + qty * rate * (1 + pct / 100);
+  }, 0);
 
-    $("#productTotal").textContent = formatMoney(productsTotal);
-    $("#laborTotal").textContent   = formatMoney(laborTotal);
-    $("#grandTotal").textContent   = formatMoney(productsTotal + laborTotal);
-  }
+  $("#productTotal").textContent = formatMoney(productsTotal);
+  $("#laborTotal").textContent   = formatMoney(laborTotal);
+  $("#grandTotal").textContent   = formatMoney(productsTotal + laborTotal);
+}
+
 
   // Dedicated remove function (requested)
   function removeItemFromCart(key) {
