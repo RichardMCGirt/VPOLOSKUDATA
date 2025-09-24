@@ -1,0 +1,14 @@
+[
+  "cache-status.js",
+  "cart.js",
+  "categorize.js",
+  "core-constants-and-helpers.js",
+  "filters-search.js",
+  "init-gapi.js",
+  "persistence.js",
+  "recompute-paint-safely-after-adding-windowrows.js",
+  "render-table.js",
+  "sheets-helpers.js",
+  "ui-loading.js",
+  "ui-utils.js"
+]
