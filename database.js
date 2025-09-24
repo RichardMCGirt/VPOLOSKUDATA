@@ -436,6 +436,8 @@ if (hasRows) {
   setExpectedRowCount?.(ALL_ROWS.length);
   setControlsEnabledState?.();
   refreshCategoriesFromAllRows?.();
+  refreshVendorsFromAllRows();   // ← add this
+
   applyFilters?.({ render: true, sort: "stable" });
   updateDataStatus?.("fresh", "Up to date • " + new Date(cached.savedAt).toLocaleTimeString());
   window.__SKIP_BOOTSTRAP = true;
@@ -1266,6 +1268,8 @@ async function gapiLoaded() {
           window.FULLY_LOADED = true;
           setControlsEnabledState?.();
           refreshCategoriesFromAllRows?.();
+          refreshVendorsFromAllRows();   // ← add this
+
           applyFilters?.({ render: true, sort: "stable" });
 
           // ✅ Make sure controls are wired even on cache path
@@ -1634,27 +1638,7 @@ function refreshCategoriesFromAllRows() {
 
 
 // Render ALL rows (no chunking). Define this once, before applyFilters().
-function renderTableAll(rows) {
-  const table = document.getElementById("data-table") || (typeof ensureTable === "function" ? ensureTable() : null);
-  if (!table) return;
 
-  let tbody = table.querySelector("tbody");
-  if (!tbody) { tbody = document.createElement("tbody"); table.appendChild(tbody); }
-  tbody.innerHTML = "";
-
-  for (const row of (Array.isArray(rows) ? rows : [])) {
-    const tr = document.createElement("tr");
-    const cells = Array.isArray(row)
-      ? row
-      : (row && typeof row === "object") ? Object.values(row) : [row];
-    for (const c of cells) {
-      const td = document.createElement("td");
-      td.textContent = (c == null) ? "" : String(c);
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-}
 
 function applyFilters(opts = {}) {
   // ===== Options & feature flags =====
@@ -1675,6 +1659,69 @@ function applyFilters(opts = {}) {
     if (render) { try { showEl?.("table-container", false); } catch {} }
     return [];
   }
+  function applyFilters({ render = true, sort = "stable" } = {}) {
+  // Start from ALL_ROWS
+  let rows = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.slice() : [];
+
+  // --- text search ---
+  const qEl = document.getElementById("searchInput");
+  const q = (qEl?.value || "").trim().toLowerCase();
+  if (q) {
+    rows = rows.filter(r => {
+      // cheap stringify; swap to specific fields if you want faster searches
+      return JSON.stringify(r).toLowerCase().includes(q);
+    });
+  }
+
+  // --- vendor filter ---
+  const vSel = document.getElementById("vendorFilter");
+  const v = (vSel?.value || "").trim();
+  if (v) {
+    rows = rows.filter(r => getVendorName(r) === v);
+  }
+
+  // --- category filter (ACTIVE_CATEGORY or #categoryFilter) ---
+  const catSel = document.getElementById("categoryFilter");
+  const activeCat = (window.ACTIVE_CATEGORY && window.ACTIVE_CATEGORY.length)
+    ? window.ACTIVE_CATEGORY
+    : (catSel?.value || "");
+  if (activeCat) {
+    const getCat = (r) => String(r.Category ?? r.category ?? "").trim();
+    rows = rows.filter(r => getCat(r) === activeCat);
+  }
+
+  // --- optional sort from a dropdown (#sortBy) ---
+  const sortSelect = document.getElementById("sortBy");
+  const sortKey = (sortSelect?.value || "").trim(); // "", "Vendor", "Name", "PriceAsc", "PriceDesc"
+  if (sortKey) {
+    rows.sort((a, b) => {
+      switch (sortKey) {
+        case "Vendor":
+          return getVendorName(a).localeCompare(getVendorName(b), undefined, { sensitivity: "base" });
+        case "Name":
+          return String(a.Name ?? a.name ?? "").localeCompare(
+            String(b.Name ?? b.name ?? ""), undefined, { sensitivity: "base" }
+          );
+        case "PriceAsc":
+          return (Number(a.Price ?? a.price ?? 0) - Number(b.Price ?? b.price ?? 0));
+        case "PriceDesc":
+          return (Number(b.Price ?? b.price ?? 0) - Number(a.Price ?? a.price ?? 0));
+        default:
+          return 0; // stable/no-op
+      }
+    });
+  }
+
+  window.FILTERED_ROWS = rows;
+
+  if (render) {
+    if (typeof renderTableAll === "function") {
+      renderTableAll(rows);
+    } else if (typeof renderTableAppend === "function") {
+      renderTableAppend(rows);
+    }
+  }
+}
 
   // ===== Data source =====
   const all = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS : [];
@@ -2434,6 +2481,8 @@ async function listSheetData() {
 
     // compute filters and render
     refreshCategoriesFromAllRows?.();
+    refreshVendorsFromAllRows();   // ← add this
+
     applyFilters?.({ render: true, sort: "stable" });
 
     // now that we have data, enable controls and wire them (idempotent)
@@ -2465,6 +2514,8 @@ async function listSheetData() {
     try { setControlsEnabledState?.(); } catch {}
     try {
       refreshCategoriesFromAllRows?.();
+      refreshVendorsFromAllRows();   // ← add this
+
       applyFilters?.({ render: true, sort: "stable" });
     } catch {}
 
@@ -2483,35 +2534,114 @@ async function listSheetData() {
   }
 })();
 
+// === CONFIG ===
+// === VENDOR CONFIG + HELPERS (place near the very top, before earlyHydrateIfCached) ===
+var VENDOR_FIELD = "Vendor";  // use var to avoid TDZ when called early
+
+function getVendorName(row){
+  if (!row || typeof row !== "object") return "";
+  let v = row[VENDOR_FIELD];
+  if (!v) v = row.vendor || row.vendor_name || row["Vendor Name"] || row["vendor name"];
+  return String(v ?? "").trim();
+}
+
+function computeVendorsList(){
+  const set = new Set();
+  if (Array.isArray(window.ALL_ROWS)) {
+    for (const r of ALL_ROWS) {
+      const v = getVendorName(r);
+      if (v) set.add(v);
+    }
+  }
+  return Array.from(set).sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:"base"}));
+}
+
+
+
+// Populate #vendorFilter options (keeps current selection if possible)
+function refreshVendorsFromAllRows() {
+  const sel = document.getElementById("vendorFilter");
+  if (!sel) return;
+
+  const prev = sel.value || "";
+  const vendors = computeVendorsList();
+
+  sel.innerHTML = "";
+  const optAll = document.createElement("option");
+  optAll.value = "";
+  optAll.textContent = "All vendors";
+  sel.appendChild(optAll);
+
+  for (const v of vendors) {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    sel.appendChild(opt);
+  }
+
+  if (prev && vendors.includes(prev)) {
+    sel.value = prev;
+  } else {
+    sel.value = "";
+  }
+}
 
 
 
 // ====================== Controls Wiring ===================
 
 function wireControlsOnce() {
-  if (_controlsWired) return;
+  if (window._controlsWired) return;
+  window._controlsWired = true;
 
   const search = document.getElementById("searchInput");
   const vendor = document.getElementById("vendorFilter");
   const catSel = document.getElementById("categoryFilter");
   const clear  = document.getElementById("clearFilters");
+  const sortBy = document.getElementById("sortBy"); // optional
 
-  if (search) search.addEventListener("input", debounce(() => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); }, 120));
-  if (vendor) vendor.addEventListener("change", () => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); });
-  if (catSel) catSel.addEventListener("change", () => {
-    ACTIVE_CATEGORY = catSel.value || "";
-    USER_INTERACTED = true;
-    renderCategoryChips();
+  // Initial population (idempotent)
+  try { refreshVendorsFromAllRows(); } catch {}
+  try { typeof refreshCategoriesFromAllRows === "function" && refreshCategoriesFromAllRows(); } catch {}
+
+  if (search) search.addEventListener("input", (typeof debounce === "function"
+    ? debounce(() => {
+        window.USER_INTERACTED = true;
+        applyFilters({ render: true, sort: "stable" });
+      }, 120)
+    : () => {
+        window.USER_INTERACTED = true;
+        applyFilters({ render: true, sort: "stable" });
+      }
+  ));
+
+  if (vendor) vendor.addEventListener("change", () => {
+    window.USER_INTERACTED = true;
     applyFilters({ render: true, sort: "stable" });
   });
 
-  if (clear) clear.addEventListener("click", () => { USER_INTERACTED = true;
+  if (catSel) catSel.addEventListener("change", () => {
+    window.ACTIVE_CATEGORY = catSel.value || "";
+    window.USER_INTERACTED = true;
+    if (typeof renderCategoryChips === "function") renderCategoryChips();
+    applyFilters({ render: true, sort: "stable" });
+  });
+
+  if (sortBy) sortBy.addEventListener("change", () => {
+    window.USER_INTERACTED = true;
+    applyFilters({ render: true, sort: "stable" }); // sort read inside applyFilters
+  });
+
+  if (clear) clear.addEventListener("click", () => {
+    window.USER_INTERACTED = true;
+
     if (search) search.value = "";
     if (vendor) vendor.value = "";
-    ACTIVE_CATEGORY = "";
+    window.ACTIVE_CATEGORY = "";
     const catSel2 = document.getElementById("categoryFilter");
     if (catSel2) catSel2.value = "";
-    renderCategoryChips();
+
+    if (typeof renderCategoryChips === "function") renderCategoryChips();
     applyFilters({ render: true, sort: "stable" });
   });
 }
