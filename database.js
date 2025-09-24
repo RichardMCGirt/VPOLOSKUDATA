@@ -1682,7 +1682,8 @@ function applyFilters(opts = {}) {
     if (render) {
       if (typeof showEl === "function") showEl("table-container", true);
       else { const tc = document.getElementById("table-container"); if (tc) tc.style.display = ""; }
-      renderTableAll(window.FILTERED_ROWS);
+renderTable(window.FILTERED_ROWS);
+bindTableHandlersOnce?.();
       if (typeof updateDataStatus === "function") updateDataStatus("fresh", `Showing all ${all.length}`);
       const badge = document.getElementById("fetch-count");
       if (badge) {
@@ -1738,7 +1739,8 @@ function applyFilters(opts = {}) {
       toggleBgHint?.(filtered.length === 0);
 
       // Render ALL, not chunked
-      renderTableAll(filtered);
+renderTable(filtered);
+bindTableHandlersOnce?.();
 
       // Update status/badge
       if (typeof updateDataStatus === "function") {
@@ -2863,27 +2865,7 @@ async function fetchSheetHeader(spreadsheetId, apiKey, sheetName, startCol="A", 
   });
   return await p;
 }
-function renderTableAll(rows) {
-  const table = document.getElementById("data-table") || (typeof ensureTable === "function" ? ensureTable() : null);
-  if (!table) return;
-  let tbody = table.querySelector("tbody");
-  if (!tbody) { tbody = document.createElement("tbody"); table.appendChild(tbody); }
-  tbody.innerHTML = "";
 
-  // Append ALL rows (no chunking)
-  for (const row of rows) {
-    const tr = document.createElement("tr");
-    const cells = Array.isArray(row)
-      ? row
-      : (row && typeof row === "object") ? Object.values(row) : [row];
-    for (const c of cells) {
-      const td = document.createElement("td");
-      td.textContent = (c == null) ? "" : String(c);
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-}
 
 function __renderFromCacheNow(reason = "pageshow"){
   if (!Array.isArray(window.ALL_ROWS) || window.ALL_ROWS.length === 0) return false;
@@ -2905,7 +2887,8 @@ function __renderFromCacheNow(reason = "pageshow"){
   window.USER_INTERACTED = true;
 
   // Always render ALL rows on this path to avoid "appending 10"
-  renderTableAll(window.FILTERED_ROWS);
+renderTable(window.FILTERED_ROWS);
+bindTableHandlersOnce?.();
 
   // Optional: update status and badge
   updateDataStatus?.("fresh", `Loaded from cache • ${reason}`);
