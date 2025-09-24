@@ -17,14 +17,7 @@
     <span id="cartCountBadge" class="badge">0</span>
   </button>
 
-  <!-- Auth/UI -->
-  <div class="auth-row">
-    <button id="authorize_button" class="btn primary">Sign in to View SKU Database</button>
-    <button id="signout_button" class="btn" style="display:none;">Sign out</button>
-  </div>
-
-  <h1></h1>
-
+ 
   <!-- Controls -->
   <div id="controls" class="card">
     <input id="searchInput" type="search" placeholder="Search by SKU or Description…" aria-label="Search by SKU or description" disabled />
@@ -36,10 +29,6 @@
     </select>
     <button id="clearFilters" class="btn" disabled>Clear</button>
   
-
-<!-- Data load status + refresh -->
-
-
 </div>
 <!-- Hidden-until-filter hint -->
 <p id="bg-hint" style="display:block;margin:10px 0;color:#555;font-style:italic;">
@@ -69,7 +58,7 @@
   <div id="toast" role="status" aria-live="polite">Done</div>
 
 <!-- Loading overlay -->
-<div id="loadingBarO;verlay" role="status" aria-live="polite" style="display:none;">
+<div id="loadingBarOverlay" role="status" aria-live="polite" style="display:none;">
   <div class="loading-panel" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
     <div id="loadingBarLabel" class="loading-label">Starting…</div>
     <div class="loading-track">
