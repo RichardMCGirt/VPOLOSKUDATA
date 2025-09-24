@@ -20,7 +20,7 @@ const RENDER_ONLY_AFTER_FULL_FETCH = false;   // was true
 // categories (must exist before applyFilters runs)
 var ALL_CATEGORIES = [];
 var ACTIVE_CATEGORY = "";
-
+let _controlsWired = false;
 
 // add these two so early code can read them safely
 var USER_INTERACTED = false;
@@ -159,6 +159,22 @@ saveProductCache(ALL_ROWS);
     setTimeout(() => { try { __maybeHideOverlay?.(); } catch {} }, 0);
   }
 }
+window.addEventListener("storage", (e) => {
+  if (e.key === PRODUCT_CACHE_KEY && e.newValue) {
+    try {
+      const obj = JSON.parse(e.newValue);
+      if (obj && Array.isArray(obj.rows)) {
+        window.ALL_ROWS = obj.rows.slice();
+        window.FULLY_LOADED = true;
+        setControlsEnabledState?.();
+        wireControlsOnce?.();                // ← add this
+        applyFilters?.({ render: true, sort: "stable" });
+        updateDataStatus?.("fresh", "Up to date • " + new Date(obj.savedAt).toLocaleTimeString());
+      }
+    } catch {}
+  }
+});
+
 function saveProductCache(rows){
   const payload = { rows: Array.isArray(rows)? rows : [], savedAt: Date.now() };
   const json = JSON.stringify(payload);
@@ -910,11 +926,7 @@ async function getHeaderCached(spreadsheetId, title){
 const DEBUG_LOGS = true;  // set to false to silence
 function dbg(...args){ try { if (DEBUG_LOGS) console.log(...args); } catch(_){} }
 function dgw(label, obj){ try { if (DEBUG_LOGS) console.groupCollapsed(label); console.log(obj); console.groupEnd(); } catch(_){} }
-// ======================
 
-// --- Smooth rendering knobs ---
-
-// --- UX gating (mobile-first) ---
 
 let BACKGROUND_PAGE_DELAY_MS = 400;
 const RENDER_CHUNK = 200; // #rows appended to DOM per idle slice
@@ -923,7 +935,6 @@ const ric = window.requestIdleCallback || (fn => setTimeout(() => fn({ timeRemai
 let _ingestSeq = 0; // monotonically increasing id assigned to each row as it arrives
 
 
-let _controlsWired = false;
 // --- Virtualization / paging config (mobile-first) ---
 const VIRTUAL_PAGE_SIZE = 300;   
 const VIRTUAL_PREFETCH = 1;      // prefetch next page proactively
@@ -1229,49 +1240,72 @@ function hasFreshCache() {
 // ===== merged version =====
 async function gapiLoaded() {
   gapi.load("client", async () => {
-    const skipOverlay = hasFreshCache7d(); // was: hasFreshCache()
+    const skipOverlay = hasFreshCache7d(); // If cache is fresh, we can avoid showing the big overlay
     try {
+      // --- Init overlay/loader (optional if cache is fresh) ---
       if (!skipOverlay) {
-        showLoadingBar(true, "Initializing…");
-        bumpLoadingTo(8, "Loading Google API client…");
+        showLoadingBar?.(true, "Initializing…");
+        bumpLoadingTo?.(8, "Loading Google API client…");
       }
+
+      // --- Init GAPI client (Sheets) ---
       await gapi.client.init({
         apiKey: (typeof API_KEY !== "undefined") ? API_KEY : "",
         discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
       });
 
-      // If cache is fresh, hydrate and EXIT without any head-probe / fetch.
-    if (hasFreshCache7d()) {
-  const cached = loadProductCache7d();
-  if (cached) {
-    ALL_ROWS = cached.rows.slice();
-    setExpectedRowCount?.(ALL_ROWS.length);
-    FULLY_LOADED = true;
-    setControlsEnabledState?.();
-    refreshCategoriesFromAllRows?.();
-    applyFilters?.({ render: true, sort: "stable" });
-    updateDataStatus?.("fresh", "Up to date • " + new Date(cached.savedAt).toLocaleTimeString());
-    bumpLoadingTo?.(100, "Ready");
-    showLoadingBar?.(false);
-    return; // <-- prevents any fetch
-  }
-}
+      // --- EARLY CACHE SHORT-CIRCUIT ---
+      if (hasFreshCache7d?.()) {
+        const cached = loadProductCache7d?.();
+        if (cached && Array.isArray(cached.rows) && cached.rows.length) {
+          // Hydrate from cache
+          window.ALL_ROWS = cached.rows.slice();
+          try { setExpectedRowCount?.(ALL_ROWS.length); } catch {}
 
+          // Enable inputs and render UI from cache
+          window.FULLY_LOADED = true;
+          setControlsEnabledState?.();
+          refreshCategoriesFromAllRows?.();
+          applyFilters?.({ render: true, sort: "stable" });
 
-      // Otherwise do your normal load:
+          // ✅ Make sure controls are wired even on cache path
+          wireControlsOnce?.();
+
+          // Status + finish
+          const ts = cached.savedAt ? new Date(cached.savedAt).toLocaleTimeString() : "";
+          updateDataStatus?.("fresh", ts ? `Up to date • ${ts}` : "Up to date");
+          bumpLoadingTo?.(100, "Ready");
+          showLoadingBar?.(false);
+          return; // No network fetch needed
+        }
+      }
+
+      // --- NORMAL LOAD (no fresh cache) ---
       bumpLoadingTo?.(25, "Fetching product data…");
-      await listSheetData(); // your existing function
+      await listSheetData(); // this will populate ALL_ROWS and render
 
+      // Finalize UI
       bumpLoadingTo?.(85, "Finalizing table…");
       applyFilters?.({ render: true, sort: "stable" });
       setControlsEnabledState?.();
+
+      // ✅ Ensure controls get wired (idempotent)
+      wireControlsOnce?.();
+
+      // Hide overlay smoothly
+      bumpLoadingTo?.(100, "Ready");
       setTimeout(() => { try { __maybeHideOverlay?.(); } catch {} }, 0);
+      setTimeout(() => showLoadingBar?.(false), 200);
     } catch (e) {
       console.error("Error loading sheet (no-login mode):", e);
+      // Make sure overlay doesn’t stick if something fails
       setTimeout(() => { try { __maybeHideOverlay?.(); } catch {} }, 0);
+      setTimeout(() => showLoadingBar?.(false), 200);
+      showToast?.("Error loading data (see console).");
     }
   });
 }
+
 
 
 
@@ -2339,56 +2373,128 @@ function renderTableAppendChunked(rows, startIdx = 0){
 }
 
 // ====================== Main Flow ========================
+// Full replacement for listSheetData()
 async function listSheetData() {
-  try { FULLY_LOADED = false; } catch(_) {}
-  dbg("[listSheetData] starting lazy load. Resetting state.");
+  try {
+    showLoadingBar?.(true, "Loading…");
+    bumpLoadingTo?.(10, "Checking cache…");
 
-  // 1) Reset state only (no skeleton, no initial table render)
-ALL_ROWS = [];
-FILTERED_ROWS = [];
-_pageCursor = 0; _noMorePages = false;
-// Start background fetch for first window silently
-await loadNextPage();
+    // 1) Try 7-day cache first
+    const cached = (typeof loadProductCache7d === "function") ? loadProductCache7d() : null;
+    const freshEnough = !!(cached && Array.isArray(cached.rows) && cached.rows.length);
 
+    if (cached) {
+      // hydrate from cache
+      window.ALL_ROWS = Array.isArray(cached.rows) ? cached.rows.slice() : [];
+      // if you track an expected total, set it here
+      try { typeof setExpectedRowCount === "function" && setExpectedRowCount(ALL_ROWS.length); } catch {}
 
-  // 3) Prefetch next window quickly
-  setTimeout(() => { loadNextPage().catch(() => {}); }, 0);
+      // enable inputs and render table/filters from cache
+      try {
+        window.FULLY_LOADED = true;
+        setControlsEnabledState?.();
+      } catch {}
 
-  // 4) Enable controls
-setControlsEnabledState();
+      try {
+        refreshCategoriesFromAllRows?.();
+        applyFilters?.({ render: true, sort: "stable" });
+      } catch {}
 
-  if (typeof wireControlsOnce === "function") wireControlsOnce();
-  if (typeof applyRestoreAfterDataLoad === "function") applyRestoreAfterDataLoad();
-  setupInfiniteScroll && setupInfiniteScroll();
+      // 🔧 ensure handlers (search, dropdowns, clear) are wired
+      try { wireControlsOnce?.(); } catch {}
 
-  // 5) Background preload (no scrolling required)
-  if (typeof preloadAllPages === "function" && AUTO_PRELOAD_ALL) { preloadAllPages().catch(() => {}); }
+      // status UI
+      try {
+        const ts = cached.savedAt ? new Date(cached.savedAt).toLocaleTimeString() : "";
+        updateDataStatus?.("fresh", ts ? `Loaded from cache • ${ts}` : "Loaded from cache");
+      } catch {}
+    }
 
-  updateDataStatus && updateDataStatus("fresh", "Up to date • " + new Date().toLocaleTimeString());
- if (Array.isArray(ALL_ROWS) && ALL_ROWS.length > 0) {
-    saveProductCache(ALL_ROWS);
+    // If cache was good enough, finish early *after* wiring
+    if (freshEnough) {
+      try { bumpLoadingTo?.(100, "Ready"); } catch {}
+      try { setTimeout(() => showLoadingBar?.(false), 200); } catch {}
+      return;
+    }
+
+    // 2) Otherwise, go fetch from network (your existing logic)
+    bumpLoadingTo?.(25, "Fetching header…");
+    const header = await getHeaderCached();            // your existing call
+    bumpLoadingTo?.(40, "Fetching rows…");
+
+    // paginated/windowed fetch loop (keep your original structure)
+    window.ALL_ROWS = [];
+    let pageIdx = 0;
+    while (true) {
+      const windowRows = await fetchRowsWindow(pageIdx++);  // returns [] when done
+      if (!Array.isArray(windowRows) || windowRows.length === 0) break;
+      ALL_ROWS.push(...windowRows);
+      bumpLoadingTo?.(40 + Math.min(50, Math.floor((ALL_ROWS.length / Math.max(1, EXPECTED_ROW_COUNT || ALL_ROWS.length)) * 50)), `Fetched ${ALL_ROWS.length}…`);
+    }
+
+    // compute filters and render
+    refreshCategoriesFromAllRows?.();
+    applyFilters?.({ render: true, sort: "stable" });
+
+    // now that we have data, enable controls and wire them (idempotent)
+    window.FULLY_LOADED = true;
+    setControlsEnabledState?.();
+    wireControlsOnce?.();
+
+    // save new cache
+    try { saveProductCache7d?.({ rows: ALL_ROWS, savedAt: Date.now?.() }); } catch {}
+
+    bumpLoadingTo?.(100, "Ready");
+  } catch (err) {
+    console.error("[listSheetData] error:", err);
+    showToast?.("Error loading data (see console).");
+  } finally {
+    setTimeout(() => showLoadingBar?.(false), 250);
   }
-
-  bumpLoadingTo?.(100, "Ready");
-  showLoadingBar?.(false);
-  FULLY_LOADED = true;
-  setControlsEnabledState?.();
-  applyFilters?.({ render: true, sort: "stable" });
 }
+;(function earlyHydrateIfCached(){
+  const cached = loadProductCache7d?.();
+  const hasRows = !!(cached && Array.isArray(cached.rows) && cached.rows.length);
+
+  if (hasRows) {
+    window.ALL_ROWS = cached.rows.slice();
+    window.FULLY_LOADED = true;
+
+    try { setExpectedRowCount?.(ALL_ROWS.length); } catch {}
+
+    try { setControlsEnabledState?.(); } catch {}
+    try {
+      refreshCategoriesFromAllRows?.();
+      applyFilters?.({ render: true, sort: "stable" });
+    } catch {}
+
+    try { wireControlsOnce?.(); } catch {}
+
+    // ✅ Build a real status string (no "...")
+    try {
+      const ts = cached.savedAt ? new Date(cached.savedAt).toLocaleTimeString() : "";
+      updateDataStatus?.("fresh", ts ? `Loaded from cache • ${ts}` : "Loaded from cache");
+    } catch {}
+
+    window.__SKIP_BOOTSTRAP = true;
+  } else {
+    window.FULLY_LOADED = false;
+    window.__SKIP_BOOTSTRAP = false;
+  }
+})();
+
+
 
 
 // ====================== Controls Wiring ===================
 
 function wireControlsOnce() {
   if (_controlsWired) return;
-  _controlsWired = true;
 
   const search = document.getElementById("searchInput");
   const vendor = document.getElementById("vendorFilter");
   const catSel = document.getElementById("categoryFilter");
   const clear  = document.getElementById("clearFilters");
-  const clearCartBtn = document.getElementById("clearCart");
-  const addLaborBtn  = document.getElementById("addLabor");
 
   if (search) search.addEventListener("input", debounce(() => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); }, 120));
   if (vendor) vendor.addEventListener("change", () => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); });
@@ -2408,32 +2514,8 @@ function wireControlsOnce() {
     renderCategoryChips();
     applyFilters({ render: true, sort: "stable" });
   });
-
-  if (clearCartBtn) clearCartBtn.addEventListener("click", clearCart);
-  if (addLaborBtn)  addLaborBtn.addEventListener("click", () => addLaborLine(0, 1, "Labor line", 0));
-
-// Ensure table visibility follows filter state
-const $search = document.getElementById('searchInput');
-if ($search && !$search.__bgFilterWired) {
-  $search.addEventListener('input', () => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); });
-  $search.__bgFilterWired = true;
-}
-const $vendor = document.getElementById('vendorFilter');
-if ($vendor && !$vendor.__bgFilterWired) {
-  $vendor.addEventListener('change', () => applyFilters({ render: true, sort: "stable" }));
-  $vendor.__bgFilterWired = true;
-}
-const $cat = document.getElementById('categoryFilter');
-if ($cat && !$cat.__bgFilterWired) {
-  $cat.addEventListener('change', () => { USER_INTERACTED = true; applyFilters({ render: true, sort: "stable" }); });
-  $cat.__bgFilterWired = true;
-}
-if (typeof window.ACTIVE_CATEGORY !== 'undefined') {
-  // In case categories are handled via buttons/chips, re-run filters on change
-  document.addEventListener('active-category-changed', () => applyFilters({ render: true, sort: "stable" }));
 }
 
-}
 
 
 // ====================== Toast/UX/Utils =========================
