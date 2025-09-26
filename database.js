@@ -3,59 +3,47 @@ const CLIENT_ID = "518347118969-drq9o3vr7auf78l16qcteor9ng4nv7qd.apps.googleuser
 const API_KEY   = "AIzaSyBGYsHkTEvE9eSYo9mFCUIecMcQtT8f0hg";
 const SHEET_ID  = "1E3sRhqKfzxwuN6VOmjI2vjWsk_1QALEKkX7mNXzlVH8";
 const SCOPES    = "https://www.googleapis.com/auth/spreadsheets.readonly";
-const RL_MAX_PER_MIN = 30;       // tune to your quota
-const RL_INTERVAL_MS = 60_000;   // sliding 1-minute window
-let __rl_timestamps = [];        // timestamps of recent calls
-// ==== STATE GLOBALS (use var to avoid TDZ) ====
+const RL_MAX_PER_MIN = 30;       
+const RL_INTERVAL_MS = 60_000;  
+let __rl_timestamps = [];     
 var ALL_ROWS = [];
 var FILTERED_ROWS = [];
 var FULLY_LOADED = false;
 var EXPECTED_ROW_COUNT = Number(localStorage.getItem("EXPECTED_ROW_COUNT")||0) || 0;
-// --- UX gating (mobile-first) ---
-// UX gating
-const RENDER_ONLY_AFTER_INTERACTION = false;  // was true
-const RENDER_ONLY_AFTER_FULL_FETCH = false;   // was true
-
-// ==== STATE GLOBALS (must be initialized before any code uses them) ====
-// categories (must exist before applyFilters runs)
+const RENDER_ONLY_AFTER_INTERACTION = false; 
+const RENDER_ONLY_AFTER_FULL_FETCH = false;   
 var ALL_CATEGORIES = [];
 var ACTIVE_CATEGORY = "";
 let _controlsWired = false;
-
-// add these two so early code can read them safely
 var USER_INTERACTED = false;
-var NO_LOGIN_MODE = true;  // keep your “no login” mode default
+var NO_LOGIN_MODE = true; 
 let _isLoadingPage = false;
 let _noMorePages   = false;
 let _pageCursor    = 0;
-// Google auth/globals
 var gisInited = false;
 var gapiInited = false;
 var tokenClient = null;
 var accessToken = null;
 const EXPECTED_KEY = "EXPECTED_ROW_COUNT";
-// If you maintain chip text separately, sync it into the input here:
 const chipText = window.__chipSearchText || "";
 const inp = document.getElementById("searchInput");
 if (inp && chipText && inp.value !== chipText) inp.value = chipText;
-
-// ---- Loading overlay / quiescence globals (safe defaults) ----
-// ===== Network + loading overlay coordination =====
-let __INFLIGHT = 0;          // active network calls
-let __ROWS_DONE = false;     // set true when pagination is finished
+let __INFLIGHT = 0;         
+let __ROWS_DONE = false;     
 let __OVERLAY_SHOWN_AT = 0;
 let __OVERLAY_HIDDEN = false;
 let __LAST_ACTIVITY_TS = 0;
-const OVERLAY_MIN_MS  = 1200;   // minimum visible time
-const QUIET_WINDOW_MS = 800;    // time of silence before hide
-// Cache TTL (e.g., 15 minutes)
-const PRODUCT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const PRODUCT_CACHE_KEY = "vanir_products_cache_v2"; // keep same as your code
+const OVERLAY_MIN_MS  = 1200;   
+const QUIET_WINDOW_MS = 800;  
+const PRODUCT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; 
+const PRODUCT_CACHE_KEY = "vanir_products_cache_v2"; 
 const PRODUCT_CACHE_SS_KEY = "vanir_products_cache_v2_ss";
+
 function isFresh(savedAt){
   try { return (Date.now() - Number(savedAt || 0)) < PRODUCT_CACHE_TTL_MS; }
   catch { return false; }
 }
+
 window.addEventListener("storage", (e) => {
   if (e.key === PRODUCT_CACHE_KEY && e.newValue) {
     try {
@@ -70,6 +58,7 @@ window.addEventListener("storage", (e) => {
     } catch {}
   }
 });
+
 function loadProductCache7d(){
   try{
     let raw = sessionStorage.getItem(PRODUCT_CACHE_SS_KEY)
@@ -82,56 +71,43 @@ function loadProductCache7d(){
     return obj;
   } catch { return null; }
 }
+
 function __noteActivity(){ __LAST_ACTIVITY_TS = Date.now(); }
+
 function $(id){ return document.getElementById(id); }
+
 function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
-// ===== listSheetData with stale-while-revalidate =====
+
 async function listSheetData() {
-  // 1) Try cache
-const cached = loadProductCache7d();   // <- use the 7-day cache
+const cached = loadProductCache7d(); 
 const freshEnough = !!(cached && isFresh(cached.savedAt));
   const now = Date.now();
-
   if (cached) {
-    // Hydrate memory instantly for snappy UI
     ALL_ROWS = Array.isArray(cached.rows) ? cached.rows.slice() : [];
     logFetchCount("listSheetData:cache-hydrate", ALL_ROWS, { cached: true });
-
     setExpectedRowCount && setExpectedRowCount(ALL_ROWS.length);
-    // Mark as fully loaded for UI gates that require it
     try { FULLY_LOADED = true; setControlsEnabledState?.(); } catch {}
-    // Render vendor/category + table only when the user interacts (your gate)
     try { refreshCategoriesFromAllRows?.(); applyFilters?.({ render: true, sort: "stable" }); } catch {}
     updateDataStatus(freshEnough ? "fresh" : "stale",
       freshEnough ? ("Up to date • " + new Date(cached.savedAt).toLocaleTimeString())
                   : "Showing cached data… revalidating");
   }
-
-  // 2) If cache is fresh, we’re done — no API calls needed
   if (freshEnough) {
-    // Still nudge the overlay to end gracefully if it’s showing
     try { bumpLoadingTo?.(100, "Ready"); } catch {}
     return;
   }
-
-  // 3) Cache is missing/stale: REVALIDATE in background without blocking UI
   try {
-    // Quick “head” probe: load the first window and compare a short fingerprint
     ALL_ROWS = []; FILTERED_ROWS = []; _pageCursor = 0; _noMorePages = false;
     __ROWS_DONE = false;
     updateDataStatus("loading", cached ? "Revalidating…" : "Loading…");
     showLoadingBar?.(true, cached ? "Checking for updates…" : "Initializing…");
     bumpLoadingTo?.(25, "Fetching product data…");
-
-    // Pull just the first page (your pager already fetches Google Sheets via your wrappers)
     await loadNextPage();
 
     const headNow = fingerprintRows(ALL_ROWS);
     const headOld = cached?.fp || "none";
-logFetchCount("listSheetData:full-fetch-complete", ALL_ROWS, { cached: false });
-
+    logFetchCount("listSheetData:full-fetch-complete", ALL_ROWS, { cached: false });
     if (headNow === headOld && cached) {
- 
       ALL_ROWS = cached.rows.slice();
       setExpectedRowCount?.(ALL_ROWS.length);
       __ROWS_DONE = true; FULLY_LOADED = true;
@@ -143,24 +119,17 @@ logFetchCount("listSheetData:full-fetch-complete", ALL_ROWS, { cached: false });
       return;
     }
 
-    // 4) Changes detected OR no cache: continue to fetch all pages in background
     if (typeof preloadAllPages === "function") {
-      await preloadAllPages(); // this uses your loadNextPage loop + nice delay, then sets FULLY_LOADED
+      await preloadAllPages(); 
     }
-
-    // Save fresh cache for next navigation
     _saveProductCacheDebounced();
-saveProductCache(ALL_ROWS);
-
-    // Re-render (filters may depend on category lists)
+    saveProductCache(ALL_ROWS);
     try { refreshCategoriesFromAllRows?.(); applyFilters?.({ render: true, sort: "stable" }); } catch {}
-
   } catch (e) {
     console.error("[listSheetData] revalidate failed", e);
     updateDataStatus("error", "Load failed");
   } finally {
     bumpLoadingTo?.(100, "Ready");
-    // Quiescence gate will hide overlay once the network is quiet
     setTimeout(() => { try { __maybeHideOverlay?.(); } catch {} }, 0);
   }
 }
@@ -172,7 +141,7 @@ window.addEventListener("storage", (e) => {
         window.ALL_ROWS = obj.rows.slice();
         window.FULLY_LOADED = true;
         setControlsEnabledState?.();
-        wireControlsOnce?.();                // ← add this
+        wireControlsOnce?.();               
         applyFilters?.({ render: true, sort: "stable" });
         updateDataStatus?.("fresh", "Up to date • " + new Date(obj.savedAt).toLocaleTimeString());
       }
@@ -187,16 +156,10 @@ function saveProductCache(rows){
   try { localStorage.setItem(PRODUCT_CACHE_KEY, json); } catch {}
 }
 
-
-
 function clearProductCache() {
   try { sessionStorage.removeItem(PRODUCT_CACHE_SS_KEY); } catch {}
   try { localStorage.removeItem(PRODUCT_CACHE_KEY); } catch {}
 }
-
-
-
-
 
 document.addEventListener("DOMContentLoaded", () => {
   if (__renderFromCacheNow("DOMContentLoaded")) return;
@@ -206,19 +169,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
-
-// 7-day freshness check using either store.
 function hasFreshCache7d() {
   const obj = loadProductCache7d();
   if (!obj) return false;
   return (Date.now() - Number(obj.savedAt)) < PRODUCT_CACHE_TTL_MS;
 }
+
 let __maxPct = 0;
+
 function setOverlayVisible(show){
   const ov = $("loadingBarOverlay"); if (!ov) return;
   ov.style.display = show ? "flex" : "none";
   try { document.body.style.overflow = show ? "hidden" : ""; } catch {}
 }
+
 function setBar(pct){
   const bar = $("loadingBar");
   if (bar){
@@ -227,6 +191,7 @@ function setBar(pct){
     try { bar.parentElement?.parentElement?.setAttribute("aria-valuenow", String(p)); } catch {}
   }
 }
+
 function setLabel(label){
   if (label == null) return;
   const lbl = $("loadingBarLabel"), meta = $("loadingBarMeta");
@@ -253,7 +218,6 @@ window.bumpLoadingTo = function(percent=0, label){
   setBar(__maxPct);
 };
 
-// Only hide when: paging done + no inflight + quiet + min visible elapsed
 function __maybeHideOverlay(){
   const now = Date.now();
   const minShown = (now - __OVERLAY_SHOWN_AT) >= OVERLAY_MIN_MS;
@@ -289,13 +253,10 @@ function updateProgressLabelFromCounts(actual){
     const pct = Math.max(6, Math.min(95, Math.floor((actual / exp) * 100)));
     bumpLoadingTo(pct, `Loading ${actual} / ${exp}…`);
   } else {
-    // Unknown total: stay under 90% and climb slowly per page
-    const base = Math.min(90, 5 + Math.floor(actual / 800)); // tune
+    const base = Math.min(90, 5 + Math.floor(actual / 800)); 
     bumpLoadingTo(base, `Loading ${actual}…`);
   }
 }
-
-
 
 async function loadNextPage(){
   if (_isLoadingPage || _noMorePages) return;
@@ -326,14 +287,6 @@ async function loadNextPage(){
       appended: transformed?.length || 0
     });
 
-    // Render
-    //if (typeof renderTableAppendChunked === "function") {
-      //await renderTableAppendChunked(transformed || []);
-    //} else if (typeof renderTableAppend === "function") {
-     // renderTableAppend(transformed || []);
-   // }
-
-    // Determine end: if fewer than requested came back, we’re done
     const got = Array.isArray(dataRows) ? dataRows.length : 0;
     if (got < VIRTUAL_PAGE_SIZE || transformed?.length === 0) {
       _noMorePages = true;
@@ -364,7 +317,7 @@ async function preloadAllPages(){
 
   const title = await resolveSheetTitle(SHEET_ID, DEFAULT_GID);
   const used = await getSheetUsedRowCount(SHEET_ID, title);
-  const expectedData = Math.max(0, used - 1); // subtract header
+  const expectedData = Math.max(0, used - 1); 
   setExpectedRowCount(expectedData);
 
   console.time("sheet:full-load");
@@ -374,10 +327,8 @@ async function preloadAllPages(){
   console.timeEnd("sheet:full-load");
 }
 
-
-// ---- Fetch progress logger ----
 function logFetchCount(where, rowsLike, extra = {}) {
-  // rowsLike can be an array (rows) or a gapi response-ish object with .result.values
+
   const got = Array.isArray(rowsLike)
     ? rowsLike.length
     : (rowsLike?.result?.values?.length ?? 0);
@@ -386,9 +337,9 @@ function logFetchCount(where, rowsLike, extra = {}) {
   const expected = Number(getExpectedRowCount?.() || window.EXPECTED_ROW_COUNT || 0);
 
   console.log(`[sheet] ${where}`, {
-    got,                    // rows returned by this step
-    totalAccumulated: total,// ALL_ROWS after this step
-    expected,               // target if known
+    got,                  
+    totalAccumulated: total,
+    expected,             
     ...extra
   });
 }
@@ -403,7 +354,6 @@ function logFetchCount(where, rowsLike, extra = {}) {
                 : (input && input.url) ? input.url
                 : "";
       if (url && url.includes("content-sheets.googleapis.com/v4/spreadsheets/")){
-        // IMPORTANT: pass the native fetch to avoid recursion
         const data = await fetchJSON429(url, init || {}, __origFetch);
         return new Response(
           new Blob([JSON.stringify(data)], { type: "application/json" }),
@@ -419,12 +369,12 @@ function logFetchCount(where, rowsLike, extra = {}) {
 })();
 
 document.getElementById("refreshData")?.addEventListener("click", async () => {
-  clearProductCache();                       // clears session + local
+  clearProductCache();                       
   updateDataStatus?.("loading", "Refreshing…");
   ALL_ROWS = []; FILTERED_ROWS = [];
   _pageCursor = 0; _noMorePages = false; __ROWS_DONE = false; FULLY_LOADED = false;
   showLoadingBar?.(true, "Refreshing…");
-  await listSheetData();                     // will fetch since cache was cleared
+  await listSheetData();                     
   bumpLoadingTo?.(100, "Ready");
   showLoadingBar?.(false);
 if (Array.isArray(ALL_ROWS) && ALL_ROWS.length > 0) {
@@ -447,6 +397,7 @@ function setExpectedRowCount(n){
 function getExpectedRowCount(){
   return Number(window.EXPECTED_ROW_COUNT || 0);
 }
+
 function getExpectedRowCount(){
   if (EXPECTED_ROW_COUNT > 0) return EXPECTED_ROW_COUNT;
   try {
@@ -455,6 +406,7 @@ function getExpectedRowCount(){
   } catch {}
   return EXPECTED_ROW_COUNT || 0;
 }
+
 (function earlyHydrateIfCached(){
  const cached = loadProductCache7d?.();
 const hasRows = !!(cached && Array.isArray(cached.rows) && cached.rows.length);
@@ -464,8 +416,7 @@ if (hasRows) {
   setExpectedRowCount?.(ALL_ROWS.length);
   setControlsEnabledState?.();
   refreshCategoriesFromAllRows?.();
-  refreshVendorsFromAllRows();   // ← add this
-
+  refreshVendorsFromAllRows();  
   applyFilters?.({ render: true, sort: "stable" });
   updateDataStatus?.("fresh", "Up to date • " + new Date(cached.savedAt).toLocaleTimeString());
   window.__SKIP_BOOTSTRAP = true;
@@ -473,10 +424,7 @@ if (hasRows) {
   FULLY_LOADED = false;
   window.__SKIP_BOOTSTRAP = false;
 }
-
 })();
-
-
 
 async function __rateLimitGate(){
   while (true){
@@ -490,6 +438,7 @@ async function __rateLimitGate(){
     await new Promise(r => setTimeout(r, waitMs));
   }
 }
+
 (function(){
   function $(id){ return document.getElementById(id); }
   function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
@@ -499,6 +448,7 @@ async function __rateLimitGate(){
     const bar = $("loadingBar");
     if (bar) bar.style.width = clamp(pct|0, 0, 100) + "%";
   }
+
   function setLabel(label){
     const lbl = $("loadingBarLabel");
     if (lbl && label != null) lbl.textContent = String(label);
@@ -506,7 +456,6 @@ async function __rateLimitGate(){
     if (meta && label != null) meta.textContent = String(label);
   }
 
-// Wherever showLoadingBar is defined
 window.showLoadingBar = function(show, label=""){
   const ov = document.getElementById("loadingBarOverlay");
   if (!ov) return;
@@ -517,7 +466,6 @@ window.showLoadingBar = function(show, label=""){
     __OVERLAY_SHOWN_AT = Date.now();
     __OVERLAY_HIDDEN   = false;
     __LAST_ACTIVITY_TS = Date.now();
-    // small starting bump so users see movement
     try { setLoadingBar(5, label || "Starting…"); } catch {}
   }
 };
@@ -538,7 +486,6 @@ window.showLoadingBar = function(show, label=""){
 function __noteActivity(){ __LAST_ACTIVITY_TS = Date.now(); }
 
 function __maybeHideOverlay(reason = ""){
-  // Only hide when: paging is marked done, no network in flight, quiet for a bit, and min show time elapsed
   const now = Date.now();
   const minShown = (now - __OVERLAY_SHOWN_AT) >= OVERLAY_MIN_MS;
   const quiet    = (now - __LAST_ACTIVITY_TS) >= QUIET_WINDOW_MS;
@@ -560,9 +507,8 @@ function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
 async function parseBody(res){
   const ct = res.headers.get("content-type") || "";
-  // Prefer JSON if present; fall back to text
   if (ct.includes("application/json")) {
-    try { return await res.json(); } catch { /* fallthrough */ }
+    try { return await res.json(); } catch {  }
   }
   const txt = await res.text();
   try { return JSON.parse(txt); } catch { return txt; }
@@ -575,9 +521,9 @@ async function fetchJSON429(url, init = {}, rawFetch = fetch){
   let lastErr;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++){
-    await __rateLimitGate?.(); // ok if you have a gate; otherwise remove this line
+    await __rateLimitGate?.(); 
     try {
-      const res = await rawFetch(url, init); // ← use injected native fetch
+      const res = await rawFetch(url, init); 
       if (res.status === 429 || res.status === 503){
         const ra = Number(res.headers.get("Retry-After"));
         let waitMs = Number.isFinite(ra) ? ra * 1000 : BASE_DELAY_MS * (2 ** attempt);
@@ -617,13 +563,10 @@ function setControlsEnabledState(){
   setDisabled("clearFilters", !ready);
 }
 
-
 function verifyRecordCount(){
   try {
 const expected = Number(getExpectedRowCount()) || 0;
     const actual   = Array.isArray(ALL_ROWS) ? ALL_ROWS.length : 0;
-
-    // progress while paging
     try {
       if (expected > 0) {
         const pct = Math.max(0, Math.min(100, Math.floor((actual / expected) * 100)));
@@ -631,7 +574,6 @@ const expected = Number(getExpectedRowCount()) || 0;
       }
     } catch {}
 
-    // ✅ only "ok" when we know the target, reached it (or exceeded), AND paging is done
     const ok = (expected > 0) && (actual >= expected) && (__ROWS_DONE === true);
 
     if (ok && !__LOADING_HID_ONCE) {
@@ -642,13 +584,11 @@ const expected = Number(getExpectedRowCount()) || 0;
 
     console.log("[verifyRecordCount]", { expected, actual, ok });
 
-    // status pill
     if (typeof updateDataStatus === "function"){
       const msg = expected ? `Loaded ${actual}${ok ? " ✓" : ` / ${expected}`}` : `Loaded ${actual}`;
       updateDataStatus(ok ? "fresh" : "warn", msg);
     }
 
-    // badge
     const badge = document.getElementById("fetch-count");
     if (badge){
       badge.textContent = expected ? `${actual} / ${expected}` : String(actual);
@@ -663,26 +603,17 @@ const expected = Number(getExpectedRowCount()) || 0;
   }
 }
 
-
-
-// Expose for console checking
 window.setExpectedRowCount = setExpectedRowCount;
 window.verifyRecordCount = verifyRecordCount;
-
-// ===== 429-aware fetch + rate limit gate (Sheets) ============================
 
 const hideLoadingOnce = (() => {
   let done = false;
   return () => { if (done) return; done = true; showLoadingBar(false); };
 })();
 
-
-
-// Normalize helpers
 function normTxt(s){ return String(s || "").toLowerCase(); }
 function normSKU(s){ return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
 
-// Build (and memoize) a lightweight index per row so matching is fast
 function rowIndex(r){
   if (r._idx) return r._idx;
   const skuRaw = String(r.sku || "");
@@ -699,31 +630,25 @@ function rowIndex(r){
   return obj;
 }
 
-// Optional macros for “shortcut words” -> multiple real terms
 const SEARCH_MACROS = {
-  // Example: ALLROOFNAIL will behave like typing: roof nail
+  
   "allroofnail": ["roof", "nail"],
-  // Add more shortcuts as needed:
-  // "fasteners": ["screw","nail","staple","bolt","washer","anchor"]
+
 };
 
-// Tokenize: quotes for phrases, space = AND, "|" inside a token = OR group.
-// Supports field filters: sku:, desc:, vendor:, uom:, cat:
-// Supports leading "-" to exclude.
 function parseQuery(q){
   const raw = String(q || "").trim();
   if (!raw) return { pos:[], ors:[], neg:[], fields:{} };
 
   const m = raw.match(/"([^"]+)"|\S+/g) || [];
-  const pos = [];           // plain positive tokens (AND)
-  const ors = [];           // array of [alt1,alt2,...]
-  const neg = [];           // negative tokens (exclude)
+  const pos = [];          
+  const ors = [];           
+  const neg = [];           
   const fields = { sku:[], desc:[], vendor:[], uom:[], cat:[] };
 
   function pushMacroOrToken(token, bucket){
     const t = token.toLowerCase();
     if (SEARCH_MACROS[t]) {
-      // expand macro into multiple words (AND each)
       for (const expanded of SEARCH_MACROS[t]) bucket.push(expanded.toLowerCase());
     } else {
       bucket.push(t);
@@ -735,11 +660,10 @@ function parseQuery(q){
       tok = tok.slice(1, -1);
     }
 
-    // Exclusion
     if (tok.startsWith("-")) {
       const t = tok.slice(1);
       if (!t) continue;
-      // fielded exclusion?
+ 
       const f = t.match(/^(\w+):(.*)$/);
       if (f && fields[f[1]?.toLowerCase()]) {
         fields[f[1].toLowerCase()].push({ v: f[2].toLowerCase(), not: true });
@@ -749,12 +673,11 @@ function parseQuery(q){
       continue;
     }
 
-    // Fielded token
     const mField = tok.match(/^(\w+):(.*)$/);
     if (mField && fields[mField[1]?.toLowerCase()]) {
       const f = mField[1].toLowerCase();
       const val = mField[2].toLowerCase();
-      // allow OR within field token: vendor:lansing|abc
+
       if (val.includes("|")){
         fields[f].push({ or: val.split("|").map(s=>s.trim()).filter(Boolean) });
       } else {
@@ -762,69 +685,29 @@ function parseQuery(q){
       }
       continue;
     }
-
-    // OR group (unfielded)
     if (tok.includes("|")) {
       const alts = tok.split("|").map(s=>s.toLowerCase().trim()).filter(Boolean);
       if (alts.length) ors.push(alts);
       continue;
     }
-
-    // Plain positive
     pushMacroOrToken(tok, pos);
   }
 
   return { pos, ors, neg, fields };
 }
 
-// Otherwise: substring match.
-function tokenMatch(hay, token){
-  if (!token) return true;
-  if (token.endsWith("*")) {
-    const base = token.slice(0, -1);
-    return base ? hay.includes(base) || hay.startsWith(base) : true;
-  }
-  if (token.startsWith("^")) {
-    const base = token.slice(1);
-    return base ? hay.startsWith(base) : true;
-  }
-  return hay.includes(token);
-}
-// ===== Loading Bar helpers =====
-function setLoadingBar(percent = 0, label = "") {
-  try {
-    const bar = document.getElementById("loadingBar");
-    const lab = document.getElementById("loadingBarLabel");
-    const meta = document.getElementById("loadingBarMeta");
-    if (bar) bar.style.width = Math.max(0, Math.min(100, percent)) + "%";
-    if (lab && label) lab.textContent = label;
-    if (meta && label) meta.textContent = label;
-  } catch (_) {}
-}
-
-function showLoadingBar(show = true, label = "") {
-  try {
-    const o = document.getElementById("loadingBarOverlay");
-    if (!o) return;
-    o.style.display = show ? "flex" : "none";
-    if (show) setLoadingBar(5, label || "Starting…");
-  } catch (_) {}
-}
-
-
 let __loadingBarMax = 0;
 
-// Field match helper: accepts string OR {v,not} OR {or:[…]} objects
 function fieldMatches(value, cond){
   const hay = String(value || "");
   const h = hay.toLowerCase();
-  const hNormSKU = normSKU(hay); // for sku: allow “LV24*” style
-  // Allow matching in either raw-lower or normalized SKU
+  const hNormSKU = normSKU(hay); 
+ 
   function oneMatch(t){
     return tokenMatch(h, t) || tokenMatch(hNormSKU, t);
   }
   if (cond.or) {
-    // at least one alt must match
+   
     return cond.or.some(t => oneMatch(t));
   }
   if (cond.not) {
@@ -833,11 +716,8 @@ function fieldMatches(value, cond){
   return oneMatch(cond.v);
 }
 
-// Row-level predicate using the parsed structure
 function rowMatches(r, qObj){
   const idx = rowIndex(r);
-
-  // Fielded filters — all specified fields must match
   for (const f of Object.keys(qObj.fields)) {
     const arr = qObj.fields[f];
     if (!arr || !arr.length) continue;
@@ -852,14 +732,11 @@ function rowMatches(r, qObj){
     }
   }
 
-  // Must contain all positive tokens (AND)
   for (const t of qObj.pos) {
-    // check across the combo hay including normalized sku
+   
     const ok = tokenMatch(idx.hay, t) || tokenMatch(idx.sku, t);
     if (!ok) return false;
   }
-
-  // OR groups — each group must match at least one alt
   for (const group of qObj.ors) {
     let ok = false;
     for (const alt of group) {
@@ -868,7 +745,6 @@ function rowMatches(r, qObj){
     if (!ok) return false;
   }
 
-  // Negatives — none may match
   for (const t of qObj.neg) {
     if (tokenMatch(idx.hay, t) || tokenMatch(idx.sku, t)) return false;
   }
@@ -876,17 +752,12 @@ function rowMatches(r, qObj){
   return true;
 }
 
-
-/** Exponential backoff with jitter for 429/5xx */
 function __backoffDelay(attempt){
-  const base = Math.min(16000, 500 * Math.pow(2, attempt)); // 0.5s, 1s, 2s, 4s, 8s, 16s cap
+  const base = Math.min(16000, 500 * Math.pow(2, attempt)); 
   const jitter = Math.floor(Math.random() * 333);
   return base + jitter;
 }
 
-
-
-// Generic retry helper for transient fetch errors
 async function withRetry(fn, attempts = 3, baseDelayMs = 200){
   let lastErr;
   for (let i = 0; i < attempts; i++) {
@@ -902,9 +773,6 @@ async function withRetry(fn, attempts = 3, baseDelayMs = 200){
   throw lastErr;
 }
 
-// === Rate limiting & 429-aware backoff (added) ===
-
-
 async function withBackoff429(fn, attempts=5){
   let lastErr;
   for (let i=0;i<attempts;i++){
@@ -914,7 +782,6 @@ async function withBackoff429(fn, attempts=5){
     }catch(e){
       const status = e?.status || e?.result?.error?.code;
       if (status !== 429 && status !== 503) throw e;
-      // Respect Retry-After if present, else exponential backoff with jitter
       let ra = 0;
       try {
         const h = e?.headers;
@@ -929,14 +796,15 @@ async function withBackoff429(fn, attempts=5){
   }
   throw lastErr;
 }
+
 async function sheetsValuesGet(params){
   return await withBackoff429(() => gapi.client.sheets.spreadsheets.values.get(params));
 }
+
 async function sheetsSpreadsheetsGet(params){
   return await withBackoff429(() => gapi.client.sheets.spreadsheets.get(params));
 }
 
-// Cache header row per (spreadsheetId,title) for this session
 const __headerMemo = new Map();
 async function getHeaderCached(spreadsheetId, title){
   const key = spreadsheetId + '::' + title;
@@ -946,81 +814,57 @@ async function getHeaderCached(spreadsheetId, title){
       spreadsheetId, range: `'${title}'!A1:H1`, valueRenderOption: 'UNFORMATTED_VALUE'
     });
     const header = headerRes.result.values?.[0] || [];
-    __headerMemo.set(key, Promise.resolve(header)); // normalize to a settled promise
+    __headerMemo.set(key, Promise.resolve(header)); 
     return header;
   })();
   __headerMemo.set(key, p);
   return await p;
 }
 
-const DEBUG_LOGS = true;  // set to false to silence
+const DEBUG_LOGS = true; 
 function dbg(...args){ try { if (DEBUG_LOGS) console.log(...args); } catch(_){} }
+
 function dgw(label, obj){ try { if (DEBUG_LOGS) console.groupCollapsed(label); console.log(obj); console.groupEnd(); } catch(_){} }
 
-
 let BACKGROUND_PAGE_DELAY_MS = 400;
-const RENDER_CHUNK = 200; // #rows appended to DOM per idle slice
+const RENDER_CHUNK = 200; 
 const ric = window.requestIdleCallback || (fn => setTimeout(() => fn({ timeRemaining: () => 8 }), 0));
-
-let _ingestSeq = 0; // monotonically increasing id assigned to each row as it arrives
-
-
-// --- Virtualization / paging config (mobile-first) ---
+let _ingestSeq = 0; 
 const VIRTUAL_PAGE_SIZE = 1500;
-const VIRTUAL_PREFETCH = 1;      // prefetch next page proactively
-let _pageTitle = null;           // resolved sheet title
+const VIRTUAL_PREFETCH = 1;     
+let _pageTitle = null;          
 let __LOADING_HID_ONCE = false;   
-// ===== GOOGLE SHEETS + GIS SIGN-IN (popup token flow) =====
-
-
-
-// If you link to a specific gid in the URL, put it here; 0 = first tab
 const DEFAULT_GID = 0;
-
-// Table + UI config
 const PRODUCT_TAB_FALLBACK = "DataLoad";
 const PRODUCT_RANGE        = "A1:H10000";
-// === NO LOGIN MODE ===
-
-// Global default product margin (materials only). Users can override per line.
-const DEFAULT_PRODUCT_MARGIN_PCT = 30; // 30% default
-
-// Back-compat: keep these, but line pricing now uses per-item margin where set.
+const DEFAULT_PRODUCT_MARGIN_PCT = 30; 
 const MARGIN = 0.30;
 const MARKUP_MULT = 1 + MARGIN;
-
-// --- State ---
-
-  let headerRowIdx = 0;
-
-// key: sku|vendor -> {row, qty, unitBase, marginPct}
+let headerRowIdx = 0;
 const CART = new Map();
-// {id, name, rate, qty, marginPct}  // percentage (e.g., 30 => +30%)
 let LABOR_LINES = [];
-
-// --- Cart tab reuse (one source of truth) ---
-// --- Cart tab reuse (define once) ---
 const CART_URL = "cart.html";
 const CART_WINDOW_NAME = "vanir_cart_tab";
 
 function openOrFocusCart(e){
   if (e) e.preventDefault();
-  const w = window.open(CART_URL, CART_WINDOW_NAME); // 👈 named window (reused)
+  const w = window.open(CART_URL, CART_WINDOW_NAME); 
   try { w && w.focus && w.focus(); } catch {}
   try { cartChannel?.postMessage({ type: "focus" }); } catch {}
 }
+
 function persistCart() {
   try {
     localStorage.setItem("vanir_cart", JSON.stringify(Array.from(CART.entries())));
   } catch (err) { console.error("Persist cart failed", err); }
 }
 
-// Whenever you add/remove/clear items:
 persistCart();
  document.addEventListener('DOMContentLoaded', () => {
     const row = document.getElementById('gentleModeRow');
-    if (row) row.hidden = true; // same as display:none
+    if (row) row.hidden = true; 
   });
+
 function maybeEnableButtons() {
   const authBtn    = document.getElementById("authorize_button");
   const signoutBtn = document.getElementById("signout_button");
@@ -1055,31 +899,25 @@ function maybeEnableButtons() {
   }
 
   if (cartFab) {
-    cartFab.onclick = openOrFocusCart; // 👈 single source of truth
+    cartFab.onclick = openOrFocusCart; 
   }
 
-  // (Optional) for a text link elsewhere:
+  
   const cartLink = document.getElementById("cartLink");
   if (cartLink) cartLink.addEventListener("click", openOrFocusCart);
 }
 
 FILTERED_ROWS = [];
 
-
-
-// Legacy shim: we now bind table clicks inside renderTable()
-function bindTableHandlers(){ /* no-op (handled in renderTable) */ }
+function bindTableHandlers(){  }
 
   function openOrFocusCart(e){
     if (e) e.preventDefault();
     const w = window.open(CART_URL, CART_WINDOW_NAME);
-    // Most browsers will re-use the same named window instead of opening a new one
     try { w && w.focus && w.focus(); } catch(_) {}
-    // Optional: nudge the cart tab to bring itself to front (see BroadcastChannel below)
     try { cartChannel?.postMessage({type:"focus"}); } catch(_) {}
   }
 
-  // Wire it
   const cartLink = document.getElementById("cartLink");
   cartLink?.addEventListener("click", openOrFocusCart);
 
@@ -1094,6 +932,7 @@ function setAndPersistToken(tokenResponse) {
   showEl("authorize_button", false);
   showEl("signout_button", true);
 }
+
 function tryLoadStoredToken() {
   let raw;
   try { raw = localStorage.getItem(TOKEN_STORAGE_KEY); } catch {}
@@ -1108,20 +947,22 @@ function tryLoadStoredToken() {
   scheduleSilentRefresh(Math.max(obj.expires_at - Date.now() - 5 * 60 * 1000, 10 * 1000));
   return true;
 }
+
 function scheduleSilentRefresh(delayMs) {
   if (refreshTimerId) clearTimeout(refreshTimerId);
   refreshTimerId = setTimeout(() => {
     try { tokenClient.requestAccessToken({ prompt: "" }); } catch {}
   }, delayMs);
 }
+
 function clearLocalToken() {
   try { localStorage.removeItem(TOKEN_STORAGE_KEY); } catch {}
   try { gapi.client.setToken(null); } catch {}
   if (refreshTimerId) { clearTimeout(refreshTimerId); refreshTimerId = null; }
 }
 
-// =============== Category rules (Description-based) ===============
 function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
 function wordMatch(text, kw) {
   const t = String(text || "").toLowerCase();
   const k = String(kw || "").toLowerCase();
@@ -1132,7 +973,7 @@ function wordMatch(text, kw) {
 }
 
 const CATEGORY_RULES = [
-  // FASTENERS first to win over generic hardware mentions
+
   { name: "Fasteners", includes: [
       "screw","screws","deck screw","trim screw","self-tapping",
       "nail","nails","roofing nail","ring shank","finish nail","common nail","framing nail",
@@ -1198,11 +1039,10 @@ const CATEGORY_RULES = [
 
   { name: "Misc", includes: [] }
 ];
-// Called by <script src="https://accounts.google.com/gsi/client" onload="gisLoaded()">
+
 function gisLoaded() {
   try {
-    gisInited = true; // just a boolean you already track
-    // Create a token client only if you actually want login enabled
+    gisInited = true; 
     if (!NO_LOGIN_MODE && window.google?.accounts?.oauth2) {
       tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
@@ -1213,7 +1053,6 @@ function gisLoaded() {
   } catch (e) {
     console.warn("GIS init skipped or failed:", e);
   } finally {
-// Wire any buttons that depend on GIS being present
     maybeEnableButtons && maybeEnableButtons();
   }
 }
@@ -1224,7 +1063,7 @@ async function getSheetUsedRowCount(spreadsheetId, title) {
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
   const col = res?.result?.values || [];
-  return col.length; // header + data
+  return col.length; 
 }
 
 function categorizeDescription(desc = "") {
@@ -1254,8 +1093,8 @@ async function fetchRowsWindow(spreadsheetId, gidNumber, pageIdx, pageSize) {
   const header = await getHeaderCached(spreadsheetId, title);
   dbg('[fetchRowsWindow] header length:', header.length);
 
-  // A:H — adjust end column if you have more columns
-  const startRow = (pageIdx * pageSize) + 2;          // +2 to skip header row
+
+  const startRow = (pageIdx * pageSize) + 2;        
   const endRow   = startRow + pageSize - 1;
   const range    = `'${title}'!A${startRow}:H${endRow}`;
 
@@ -1288,96 +1127,72 @@ async function fetchJSON(url, init){
   );
 }
 
-// ===== helper: detect fresh local cache (kept in sync with your TTL) =====
 function hasFreshCache() {
   try {
     const raw = localStorage.getItem("PRODUCT_CACHE_V1");
     if (!raw) return false;
     const obj = JSON.parse(raw);
     if (!obj || !Array.isArray(obj.rows) || !obj.savedAt) return false;
-    // IMPORTANT: keep PRODUCT_CACHE_TTL_MS consistent with your cache module
+    
     const ttl = (typeof PRODUCT_CACHE_TTL_MS === "number" && PRODUCT_CACHE_TTL_MS > 0)
       ? PRODUCT_CACHE_TTL_MS
-      : (15 * 60 * 1000); // default 15 min if not defined
+      : (15 * 60 * 1000); 
     return (Date.now() - Number(obj.savedAt)) < ttl;
   } catch {
     return false;
   }
 }
 
-// ===== merged version =====
 async function gapiLoaded() {
   gapi.load("client", async () => {
-    const skipOverlay = hasFreshCache7d(); // If cache is fresh, we can avoid showing the big overlay
+    const skipOverlay = hasFreshCache7d(); 
     try {
-      // --- Init overlay/loader (optional if cache is fresh) ---
+      
       if (!skipOverlay) {
         showLoadingBar?.(true, "Initializing…");
         bumpLoadingTo?.(8, "Loading Google API client…");
       }
 
-      // --- Init GAPI client (Sheets) ---
       await gapi.client.init({
         apiKey: (typeof API_KEY !== "undefined") ? API_KEY : "",
         discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
       });
 
-      // --- EARLY CACHE SHORT-CIRCUIT ---
       if (hasFreshCache7d?.()) {
         const cached = loadProductCache7d?.();
         if (cached && Array.isArray(cached.rows) && cached.rows.length) {
-          // Hydrate from cache
           window.ALL_ROWS = cached.rows.slice();
           try { setExpectedRowCount?.(ALL_ROWS.length); } catch {}
-
-          // Enable inputs and render UI from cache
           window.FULLY_LOADED = true;
           setControlsEnabledState?.();
           refreshCategoriesFromAllRows?.();
-          refreshVendorsFromAllRows();   // ← add this
-
+          refreshVendorsFromAllRows();   
           applyFilters?.({ render: true, sort: "stable" });
-
-          // ✅ Make sure controls are wired even on cache path
           wireControlsOnce?.();
-
-          // Status + finish
           const ts = cached.savedAt ? new Date(cached.savedAt).toLocaleTimeString() : "";
           updateDataStatus?.("fresh", ts ? `Up to date • ${ts}` : "Up to date");
           bumpLoadingTo?.(100, "Ready");
           showLoadingBar?.(false);
-          return; // No network fetch needed
+          return; 
         }
       }
-
-      // --- NORMAL LOAD (no fresh cache) ---
       bumpLoadingTo?.(25, "Fetching product data…");
-      await listSheetData(); // this will populate ALL_ROWS and render
-
-      // Finalize UI
+      await listSheetData(); 
       bumpLoadingTo?.(85, "Finalizing table…");
       applyFilters?.({ render: true, sort: "stable" });
       setControlsEnabledState?.();
-
-      // ✅ Ensure controls get wired (idempotent)
       wireControlsOnce?.();
-
-      // Hide overlay smoothly
       bumpLoadingTo?.(100, "Ready");
       setTimeout(() => { try { __maybeHideOverlay?.(); } catch {} }, 0);
       setTimeout(() => showLoadingBar?.(false), 200);
     } catch (e) {
       console.error("Error loading sheet (no-login mode):", e);
-      // Make sure overlay doesn’t stick if something fails
       setTimeout(() => { try { __maybeHideOverlay?.(); } catch {} }, 0);
       setTimeout(() => showLoadingBar?.(false), 200);
       showToast?.("Error loading data (see console).");
     }
   });
 }
-
-
-
 
 async function updateAllPricingFromSheet() {
   try {
@@ -1391,10 +1206,8 @@ async function updateAllPricingFromSheet() {
       if (!r) continue;
       item.row = r;
       item.unitBase = unitBase(r);
-      // keep per-line marginPct; unit recalculated during render
       updated++;
     }
-
     renderCart();
     persistState();
     showToast(`Updated pricing for ${updated} item${updated === 1 ? "" : "s"}.`);
@@ -1406,7 +1219,6 @@ showEl("loadingBarOverlay", false);
   }
 }
 
-// ===================== Sheet Helpers ======================
 const HEADER_ALIASES = {
   vendor:        ["vendor","supplier"],
   sku:           ["sku","item","item code","item #","item#"],
@@ -1426,6 +1238,7 @@ function headerKey(name) {
   }
   return null;
 }
+
 function parseNumber(x) {
   const s = norm(x).replace(/\$/g, "").replace(/,/g, "");
   if (!s) return null;
@@ -1433,6 +1246,7 @@ function parseNumber(x) {
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
+
 function makeSkuHelper(sku, vendor) {
   const v = norm(vendor) || "N/A";
   return `${norm(sku)}${v}`;
@@ -1454,11 +1268,7 @@ async function getSheetTitleByGid(spreadsheetId, gidNumber) {
   }
 }
 
-// Main: fetch + transform
-// Fetch products from a specific sheet tab (by gid if provided) and build row indexes.
-// Adds clear logs for raw grid values and final row objects.
 async function fetchProductSheet(spreadsheetId, gidNumber = null) {
-  // --- Resolve the tab title (gid → title) ---
   let title = null;
   if (gidNumber !== null && gidNumber !== undefined) {
     try {
@@ -1469,14 +1279,12 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
   }
   if (!title) title = PRODUCT_TAB_FALLBACK;
 
-  // --- Fetch grid values ---
   const res = await gapi.client.sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${title}'!${PRODUCT_RANGE}`,
   });
   const values = res.result?.values || [];
 
-  // LOG: raw grid rows returned
   logFetchCount?.("fetchProductSheet:raw-values", { result: { values } }, {
     title,
     range: PRODUCT_RANGE
@@ -1486,14 +1294,11 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     return { rows: [], bySku: Object.create(null), bySkuVendor: Object.create(null), title };
   }
 
-  // --- Find header row (first ~5 rows) ---
   const MAX_SCAN = Math.min(5, values.length);
   let headerRowIdx = 0;
   let header = values[0] || [];
   for (let r = 0; r < MAX_SCAN; r++) {
     const row = values[r] || [];
-    // Heuristic: a header row usually has at least 3-4 non-empty cells and includes
-    // some of the canonical column names.
     const joined = row.map(c => String(c || "").toLowerCase());
     const hits = ["vendor", "sku", "uom", "description"].filter(k =>
       joined.some(x => x.includes(k))
@@ -1506,7 +1311,6 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     }
   }
 
-  // --- Build a column map by normalized header names ---
   const norm = (s) => String(s ?? "").trim();
   const toKey = (s) => norm(s).toLowerCase().replace(/\s+/g, " ").replace(/[^\w ]+/g, "").replace(/\s+/g, "_");
 
@@ -1531,7 +1335,6 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     marginPct:     findCol("margin_pct","margin","markup_pct","markup"),
   };
 
-  // --- Iterate all rows after header and build normalized rows ---
   const rows = [];
   for (let r = headerRowIdx + 1; r < values.length; r++) {
     const row = values[r] || [];
@@ -1548,7 +1351,6 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     const cleanSku = norm(sku);
 if (!cleanSku && !nm(rawDesc)) continue;
 
-    // Compute priceExtended if missing: px = multiple * cost
     if (px == null) {
       const m = (mult == null ? 1 : mult);
       const c = (cost == null ? 0 : cost);
@@ -1569,7 +1371,6 @@ if (!cleanSku && !nm(rawDesc)) continue;
     });
   }
 
-  // --- Build indexes ---
   const bySku = Object.create(null);
   const bySkuVendor = Object.create(null);
   for (const r of rows) {
@@ -1578,7 +1379,6 @@ if (!cleanSku && !nm(rawDesc)) continue;
     if (!bySku[r.sku]) bySku[r.sku] = r;
   }
 
-  // LOG: final clean rows produced
   logFetchCount?.("fetchProductSheet:rows-built", rows, {
     title,
     headerRowIdx,
@@ -1588,8 +1388,6 @@ if (!cleanSku && !nm(rawDesc)) continue;
   return { rows, bySku, bySkuVendor, title };
 }
 
-
-// ====================== Render: Product Table ============================
 function ensureTable() {
   let table = document.getElementById("data-table");
   if (!table) {
@@ -1607,6 +1405,7 @@ function formatMoney(n) {
   if (!Number.isFinite(x)) return "$0.00";
   return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2, style: "currency", currency: "USD" });
 }
+
 function escapeHtml(s) {
   return String(s ?? "")
     .replaceAll("&","&amp;")
@@ -1615,13 +1414,14 @@ function escapeHtml(s) {
     .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
 }
+
 function unitBase(row) {
   const mult = row.uomMultiple == null ? 1 : Number(row.uomMultiple) || 1;
   const px = (row.priceExtended != null ? Number(row.priceExtended) : null);
   const cost = (row.cost != null ? Number(row.cost) : 0);
   return (px != null ? px : (mult * cost));
 }
-// Compute per-item unit sell using its margin (or default)
+
 function itemUnitSell(item) {
   const pct = Math.max(0, Number(item?.marginPct ?? DEFAULT_PRODUCT_MARGIN_PCT) || 0);
   return (Number(item.unitBase) || 0) * (1 + pct / 100);
@@ -1662,8 +1462,6 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
   }
 }
 
-// ====================== Filters & Search ============================
-// === Background-first: render only when a filter or search is active ===
 function hasAnyActiveFilter(){
   try {
     const q = (document.getElementById("searchInput")?.value || "").trim();
@@ -1677,7 +1475,6 @@ function hasAnyActiveFilter(){
   }
 }
 
-
 function toggleBgHint() {
   try {
     const show = !hasAnyActiveFilter();
@@ -1686,39 +1483,38 @@ function toggleBgHint() {
   } catch {}
 }
 
-
 function populateVendorFilter(rows) {
   const sel = document.getElementById("vendorFilter");
   if (!sel) return;
   const vendors = Array.from(new Set(rows.map(r => r.vendor).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
   sel.innerHTML = `<option value="">All vendors</option>` + vendors.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
 }
+
 function buildCategories(rows) {
   const s = new Set(rows.map(r => r.category || "Misc"));
   const categories = Array.from(s).sort((a,b)=>a.localeCompare(b));
   ALL_CATEGORIES = categories;
   return categories;
 }
+
 function populateCategoryFilter(rows) {
   const sel = document.getElementById("categoryFilter");
   if (!sel) return;
   const cats = buildCategories(rows);
   sel.innerHTML = `<option value="">All categories</option>` + cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
 }
+
 function renderCategoryChips() {
   const wrap = document.getElementById("categoryChips");
   if (!wrap) return;
 
   wrap.innerHTML = "";
-
-  // "All" chip
   const all = document.createElement("button");
   all.className = "chip" + (window.ACTIVE_CATEGORY ? "" : " active");
   all.textContent = "All";
   all.setAttribute("data-cat", "");
   wrap.appendChild(all);
 
-  // Category chips
   for (const c of (window.ALL_CATEGORIES || [])) {
     const btn = document.createElement("button");
     btn.className = "chip" + (c === window.ACTIVE_CATEGORY ? " active" : "");
@@ -1727,7 +1523,6 @@ function renderCategoryChips() {
     wrap.appendChild(btn);
   }
 
-  // Click handler (single delegate)
   wrap.onclick = (e) => {
     const chip = e.target.closest(".chip");
     if (!chip) return;
@@ -1735,15 +1530,11 @@ function renderCategoryChips() {
     window.ACTIVE_CATEGORY = chip.getAttribute("data-cat") || "";
     const sel = document.getElementById("categoryFilter");
     if (sel) sel.value = window.ACTIVE_CATEGORY;
-
-    // If you use the “show only after interaction” gate:
     try { window.USER_INTERACTED = true; } catch {}
 
-    // Visual active state
     Array.from(wrap.querySelectorAll(".chip"))
       .forEach(el => el.classList.toggle("active", el === chip));
 
-    // Re-filter (stable so results don’t jump)
     applyFilters({ render: true, sort: "stable" });
   };
 }
@@ -1760,13 +1551,9 @@ function refreshCategoriesFromAllRows() {
   renderCategoryChips();
 }
 
-
-// Render ALL rows (no chunking). Define this once, before applyFilters().
-
-
 function applyFilters(opts = {}) {
-  // ===== Options & feature flags =====
-  const render = opts.render !== false; // default true
+
+  const render = opts.render !== false; 
   const sortMode = opts.sort || "stable";
 
   const ONLY_AFTER_INTERACTION = (typeof RENDER_ONLY_AFTER_INTERACTION !== "undefined")
@@ -1774,8 +1561,7 @@ function applyFilters(opts = {}) {
   const ONLY_AFTER_FULL_FETCH  = (typeof RENDER_ONLY_AFTER_FULL_FETCH  !== "undefined")
     ? !!RENDER_ONLY_AFTER_FULL_FETCH  : false;
 
-  // ===== Short-circuit render gating (optional UX) =====
-  if (ONLY_AFTER_FULL_FETCH && !window.FULLY_LOADED) {
+   if (ONLY_AFTER_FULL_FETCH && !window.FULLY_LOADED) {
     if (render) { try { showEl?.("table-container", false); } catch {} }
     return [];
   }
@@ -1783,11 +1569,11 @@ function applyFilters(opts = {}) {
     if (render) { try { showEl?.("table-container", false); } catch {} }
     return [];
   }
+  
   function applyFilters({ render = true, sort = "stable" } = {}) {
-  // Start from ALL_ROWS
+
   let rows = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.slice() : [];
 
-  // --- text search ---
   const qEl = document.getElementById("searchInput");
   const q = (qEl?.value || "").trim().toLowerCase();
   if (q) {
@@ -1796,14 +1582,12 @@ function applyFilters(opts = {}) {
  
   }
 
-  // --- vendor filter ---
   const vSel = document.getElementById("vendorFilter");
   const v = (vSel?.value || "").trim();
   if (v) {
     rows = rows.filter(r => getVendorName(r) === v);
   }
 
-  // --- category filter (ACTIVE_CATEGORY or #categoryFilter) ---
   const catSel = document.getElementById("categoryFilter");
   const activeCat = (window.ACTIVE_CATEGORY && window.ACTIVE_CATEGORY.length)
     ? window.ACTIVE_CATEGORY
@@ -1813,9 +1597,8 @@ function applyFilters(opts = {}) {
     rows = rows.filter(r => getCat(r) === activeCat);
   }
 
-  // --- optional sort from a dropdown (#sortBy) ---
   const sortSelect = document.getElementById("sortBy");
-  const sortKey = (sortSelect?.value || "").trim(); // "", "Vendor", "Name", "PriceAsc", "PriceDesc"
+  const sortKey = (sortSelect?.value || "").trim(); 
   if (sortKey) {
     rows.sort((a, b) => {
       switch (sortKey) {
@@ -1830,7 +1613,7 @@ function applyFilters(opts = {}) {
         case "PriceDesc":
           return (Number(b.Price ?? b.price ?? 0) - Number(a.Price ?? a.price ?? 0));
         default:
-          return 0; // stable/no-op
+          return 0; 
       }
     });
   }
@@ -1846,7 +1629,6 @@ function applyFilters(opts = {}) {
   }
 }
 
-  // ===== Data source =====
   const all = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS : [];
   const haveData = all.length > 0;
 
@@ -1865,22 +1647,15 @@ function applyFilters(opts = {}) {
     return [];
   }
 
-  // ===== Read current controls safely =====
   const qRawEl = document.getElementById("searchInput");
   const qRaw = (qRawEl && typeof qRawEl.value === "string" ? qRawEl.value : "").trim();
   const vendorSel = (document.getElementById("vendorFilter")?.value || "").trim();
   const categorySel = (window.ACTIVE_CATEGORY || document.getElementById("categoryFilter")?.value || "").trim();
-
-  // ===== Tokenize search =====
   const q = qRaw.toLowerCase();
   const tokens = q.length ? q.split(/\s+/).filter(Boolean) : [];
-
-  // ===== Flags for filtering =====
   const hasVendor = !!vendorSel;
   const hasCategory = !!categorySel;
   const hasSearch = tokens.length > 0;
-
-  // ===== Default: if nothing is selected/searched, show everything =====
   if (!hasVendor && !hasCategory && !hasSearch) {
     window.FILTERED_ROWS = all.slice();
     if (render) {
@@ -1898,9 +1673,7 @@ bindTableHandlersOnce?.();
     return window.FILTERED_ROWS;
   }
 
-  // ===== Otherwise, filter by vendor/category/search =====
   let filtered = all.filter((row) => {
-    // Normalize row to a searchable string
     let hay = "";
     if (row && typeof row === "object") {
       if (Array.isArray(row)) {
@@ -1927,12 +1700,9 @@ bindTableHandlersOnce?.();
     return true;
   });
 
-  // ===== Stable-ish ordering (optional) =====
   if (sortMode === "stable" && Array.isArray(filtered)) {
-    // no-op to preserve original order
   }
 
-  // ===== Update global & render =====
   window.FILTERED_ROWS = filtered;
 
   if (render) {
@@ -1942,11 +1712,9 @@ bindTableHandlersOnce?.();
 
       toggleBgHint?.(filtered.length === 0);
 
-      // Render ALL, not chunked
 renderTable(filtered);
 bindTableHandlersOnce?.();
 
-      // Update status/badge
       if (typeof updateDataStatus === "function") {
         const total = all.length, shown = filtered.length;
         const msg = (shown === total) ? `Showing all ${shown}` : `Showing ${shown} of ${total}`;
@@ -1967,39 +1735,31 @@ bindTableHandlersOnce?.();
   return window.FILTERED_ROWS;
 }
 
-// ===== Virtual Table Renderer =====
 let VT = {
-  rows: [],          // current datasource (e.g., FILTERED_ROWS)
-  rowH: 36,          // measured row height (px)
-  buffer: 12,        // rows above/below viewport
-  poolSize: 0,       // number of DOM row nodes in pool
-  pool: [],          // DOM row nodes we recycle
-  scroller: null,    // #table-viewport
-  spacer: null,      // #table-spacer
-  firstIdx: 0,       // first rendered index
-  lastIdx: -1,       // last rendered index
-  raf: 0,            // requestAnimationFrame id
+  rows: [],          
+  rowH: 36,          
+  buffer: 12,       
+  poolSize: 0,      
+  pool: [],          
+  scroller: null,    
+  spacer: null,     
+  firstIdx: 0,      
+  lastIdx: -1,       
+  raf: 0,            
 };
 
 function initVirtualTable(initialRows) {
   VT.scroller = document.getElementById("table-viewport");
   VT.spacer   = document.getElementById("table-spacer");
   VT.rows     = Array.isArray(initialRows) ? initialRows : [];
-
-  // measure row height once using a temp node
   VT.rowH = Math.max(24, measureRowHeight());
-
-  // pool size ~= visible rows + buffer; compute from viewport height
   const vis = Math.ceil((VT.scroller.clientHeight || 600) / VT.rowH);
   VT.poolSize = Math.max(30, vis + VT.buffer * 2);
-
-  // build pool
   VT.pool = [];
-  VT.spacer.innerHTML = ""; // clear
+  VT.spacer.innerHTML = ""; 
   for (let i = 0; i < VT.poolSize; i++) {
     const n = document.createElement("div");
     n.className = "vrow";
-    // 8 cells to match header columns
     for (let c = 0; c < 8; c++) {
       const cell = document.createElement("div");
       n.appendChild(cell);
@@ -2007,23 +1767,17 @@ function initVirtualTable(initialRows) {
     VT.spacer.appendChild(n);
     VT.pool.push(n);
   }
-
-  // set total height
   VT.spacer.style.height = (VT.rows.length * VT.rowH) + "px";
-
-  // bind scroll (throttled via rAF)
   VT.scroller.removeEventListener("scroll", onVirtualScroll);
   VT.scroller.addEventListener("scroll", onVirtualScroll);
   VT.firstIdx = 0;
   VT.lastIdx  = -1;
-  // initial paint
   scheduleVirtualPaint();
 }
 
 function measureRowHeight(){
   const tmp = document.createElement("div");
   tmp.className = "vrow";
-  // match structure
   for (let c = 0; c < 8; c++) tmp.appendChild(document.createElement("div"));
   tmp.style.visibility = "hidden";
   tmp.style.position = "absolute";
@@ -2073,12 +1827,8 @@ function paintVirtualSlice(){
       continue;
     }
     const r = VT.rows[dataIdx];
-    // position row
     const y = dataIdx * VT.rowH;
     dom.style.transform = `translateY(${y}px)`;
-
-    // fill cells (8 columns)
-    // Order: vendor, sku, uom, description, helper, mult, cost, priceExtended
     const cells = dom.children;
     cells[0].textContent = safeText(r.vendor);
     cells[1].textContent = safeText(r.sku);
@@ -2094,11 +1844,13 @@ function paintVirtualSlice(){
 function safeText(v){
   return (v==null) ? "" : String(v);
 }
+
 function toFixedMaybe(v){
   if (v==null || v==="") return "";
   const n = Number(v);
   return Number.isFinite(n) ? (Math.round(n*100)/100).toString() : String(v);
 }
+
 function moneyMaybe(v){
   if (v==null || v==="") return "";
   const n = Number(v);
@@ -2106,21 +1858,18 @@ function moneyMaybe(v){
   return "$" + (Math.round(n*100)/100).toFixed(2);
 }
 
-/** Public: call when your datasource changes (filters/search). */
 function updateVirtualRows(newRows){
   VT.rows = Array.isArray(newRows) ? newRows : [];
   if (VT.spacer) {
     VT.spacer.style.height = (VT.rows.length * VT.rowH) + "px";
   }
   if (VT.scroller) {
-    VT.scroller.scrollTop = 0; // reset to top so indices recalc cleanly
+    VT.scroller.scrollTop = 0; 
   }
   VT.firstIdx = 0; VT.lastIdx = -1;
   scheduleVirtualPaint();
 }
 
-
-// Replace your "renderTableAll" (or add this helper) — uses chunked DOM writes.
 function renderTableAll(rows) {
   const table = ensureTable();
   const thead = table.querySelector("thead");
@@ -2139,7 +1888,6 @@ function renderTableAll(rows) {
   }
   if (!tbody) return;
 
-  // Clear first, then append in chunks
   tbody.innerHTML = "";
 
   const N = rows.length;
@@ -2149,7 +1897,6 @@ function renderTableAll(rows) {
   const ric = window.requestIdleCallback || (fn => setTimeout(() => fn({ timeRemaining: () => 8 }), 0));
 
   function pump(deadline){
-    // append while we have idle time (or at least one chunk)
     while ((deadline.timeRemaining ? deadline.timeRemaining() > 4 : true) && i < N) {
       const end = Math.min(i + chunk, N);
       const frag = document.createDocumentFragment();
@@ -2171,23 +1918,18 @@ function renderTableAll(rows) {
       }
       tbody.appendChild(frag);
     }
-    if (i < N) ric(pump); // schedule next idle slice
+    if (i < N) ric(pump);
   }
   ric(pump);
 }
 
-
-
-
-// ====================== Cart ============================
 function addToCart(row, qty) {
-  if (!(qty > 0)) return; // ignore 0 / invalid
+  if (!(qty > 0)) return; 
 const key = `${row.sku}|${row.vendor}|${row.uom || ''}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
   if (existing) existing.qty += qty;
   else CART.set(key, { row, qty, unitBase: ub, marginPct: DEFAULT_PRODUCT_MARGIN_PCT });
-  // Default labor section present with 0 qty so it stays $0 until used
   if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
   renderCart();
   showToast(`Added ${qty} ${row?.sku || "item"} to cart`);
@@ -2195,7 +1937,7 @@ const key = `${row.sku}|${row.vendor}|${row.uom || ''}`;
   persistState();
   updateCartBadge();
 }
-// marginPct is percentage (number), e.g., 30 => +30%
+
 function addLaborLine(rate = 0, qty = 0, name = "Labor line", marginPct = 0) {
   const safeQty  = Math.max(0, Math.floor(qty || 0));
   const safeRate = Number(rate) || 0;
@@ -2214,6 +1956,7 @@ function updateCartQty(key, qty) {
   persistState();
   updateCartBadge();
 }
+
 function removeCartItem(key) {
   if (!CART.has(key)) return;
   CART.delete(key);
@@ -2222,6 +1965,7 @@ function removeCartItem(key) {
   persistState();
   updateCartBadge();
 }
+
 function clearCart() {
   CART.clear();
   renderCart();
@@ -2230,7 +1974,6 @@ function clearCart() {
   updateCartBadge();
 }
 
-// ====================== Labor (Qty × Rate × (1 + pct/100)) ====================
 let _laborIdSeq = 1;
 
 function removeLaborLine(id) {
@@ -2240,7 +1983,6 @@ function removeLaborLine(id) {
   persistState();
 }
 
-// Compute labor total
 function calcLaborTotal() {
   let total = 0;
   for (const l of LABOR_LINES) {
@@ -2294,8 +2036,6 @@ function renderCart() {
     `);
   }
   tbody.innerHTML = rows.join("");
-
-  // Inline updates for qty & margin
   tbody.oninput = (ev) => {
     const qtyEl = ev.target.closest(".cart-qty");
     if (qtyEl) {
@@ -2336,11 +2076,9 @@ function renderCart() {
     updateCartBadge();
   };
 
-  // Re-render labor & totals
   renderLabor();
   updateTotalsOnly();
 }
-
 
 function renderLabor() {
   const wrap = document.getElementById("labor-list");
@@ -2416,7 +2154,7 @@ function renderLabor() {
       const id  = Number(marginEl.getAttribute("data-id"));
       let val = Number(marginEl.value);
       if (!Number.isFinite(val)) val = 0;
-      val = Math.max(0, val); // 0..∞; 30 => +30%
+      val = Math.max(0, val);
       const l = LABOR_LINES.find(x => x.id === id);
       if (!l) return;
       l.marginPct = val;
@@ -2443,12 +2181,12 @@ function renderLabor() {
   };
 }
 
-// helpers
 function calcProductsTotal() {
   let productTotal = 0;
   for (const [, item] of CART.entries()) productTotal += itemUnitSell(item) * item.qty;
   return productTotal;
 }
+
 function updateTotalsOnly() {
   const productTotal = calcProductsTotal();
   document.getElementById("productTotal").textContent = formatMoney(productTotal);
@@ -2456,17 +2194,13 @@ function updateTotalsOnly() {
   document.getElementById("laborTotal").textContent = formatMoney(laborTotal);
   document.getElementById("grandTotal").textContent = formatMoney(productTotal + laborTotal);
 }
+
 function updateCartBadge() {
   const badge = document.getElementById("cartCountBadge");
   if (!badge) return;
   let total = 0; for (const [, it] of CART) total += Math.max(0, it.qty|0);
   badge.textContent = String(total);
 }
-
-
-
-
-// ======= Cross-tab cart sync (BroadcastChannel + back/forward cache) =======
 try {
   var cartChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("vanir_cart_bc") : null;
 } catch (_) { var cartChannel = null; }
@@ -2483,7 +2217,6 @@ if (cartChannel) {
       try {
         var s = msg.state || {};
         if (Array.isArray(s.cart)) {
-          // Replace in-memory state with incoming
           CART.clear();
           for (var i = 0; i < s.cart.length; i++) {
             var it = s.cart[i] || {};
@@ -2498,7 +2231,6 @@ if (cartChannel) {
           if (Array.isArray(s.labor)) {
             LABOR_LINES = s.labor.slice();
           }
-          // Persist & refresh UI
           try { persistState(); } catch (_e) {}
           try { renderCart(); } catch (_e2) {}
           try { updateCartBadge(); } catch (_e3) {}
@@ -2510,7 +2242,6 @@ if (cartChannel) {
   };
 }
 
-// When navigating back to this page (bfcache), resync the cart from localStorage
 window.addEventListener("pageshow", function () {
   try {
     var raw = localStorage.getItem(STORAGE_KEY);
@@ -2543,7 +2274,6 @@ window.addEventListener("pageshow", function () {
   }
 }, { passive: true });
 
-// ========= Persistence =========
 const STORAGE_KEY = "vanir_cart_v1";
 let _restoreCache = null;
 
@@ -2567,23 +2297,26 @@ function serializeState() {
     labor: LABOR_LINES.map(l => ({
       id: l.id,
       rate: Number(l.rate) || 0,
-      qty: Math.max(0, Math.floor(Number(l.qty ?? 0) || 0)), // allow 0
+      qty: Math.max(0, Math.floor(Number(l.qty ?? 0) || 0)), 
       name: l.name || "Labor line",
-      marginPct: Math.max(0, Number(l.marginPct) || 0), // percentage
+      marginPct: Math.max(0, Number(l.marginPct) || 0), 
     })),
     laborIdSeq: typeof _laborIdSeq === "number" ? _laborIdSeq : 1,
     activeCategory: ACTIVE_CATEGORY
   };
 }
+
 function persistState() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState())); } catch (e) {}
 }
+
 function stageRestoreFromLocalStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     _restoreCache = raw ? JSON.parse(raw) : null;
   } catch (e) { _restoreCache = null; }
 }
+
 function applyRestoreAfterDataLoad() {
   if (!_restoreCache) { updateCartBadge(); return; }
 const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}|${r.uom || ''}`, r]));
@@ -2602,7 +2335,6 @@ const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}|${r.uom || ''}`, 
     });
   }
   LABOR_LINES = Array.isArray(_restoreCache.labor) ? _restoreCache.labor.map(l => {
-    // Backwards compatibility: if older "margin" multiplier exists, convert to percent.
     let pct = 0;
     if (typeof l.marginPct === "number") {
       pct = Math.max(0, Number(l.marginPct) || 0);
@@ -2626,22 +2358,18 @@ const index = new Map(ALL_ROWS.map(r => [`${r.sku}|${r.vendor}|${r.uom || ''}`, 
   updateCartBadge();
 }
 
-// Debounce
 function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
+
 function hasFreshCache(){
   try{
     const raw = localStorage.getItem("PRODUCT_CACHE_V1");
     if (!raw) return false;
     const obj = JSON.parse(raw);
     if (!obj || !Array.isArray(obj.rows) || !obj.savedAt) return false;
-    // keep in sync with your TTL constant
     return (Date.now() - obj.savedAt) < PRODUCT_CACHE_TTL_MS;
   }catch{ return false; }
 }
 
-// ======= Data cache & status (stale-while-revalidate) =======
-
-/** Compact fingerprint based on first N rows' key fields. */
 function fingerprintRows(rows, limit = 400){
   if (!Array.isArray(rows) || rows.length === 0) return "empty:0";
   const slice = rows.slice(0, limit).map(r =>
@@ -2652,10 +2380,8 @@ function fingerprintRows(rows, limit = 400){
   return (h >>> 0).toString(36) + ":" + Math.min(limit, rows.length);
 }
 
-
 cartChannel?.postMessage({ type: "cartUpdate", cart: Array.from(CART.entries()) });
 
-// Cache helpers
 function loadProductCache(){
   try {
     const raw = localStorage.getItem(PRODUCT_CACHE_KEY);
@@ -2671,10 +2397,9 @@ const _saveProductCacheDebounced = debounce(() => {
     const rows = Array.isArray(ALL_ROWS) ? ALL_ROWS : [];
     const payload = { rows, fp: fingerprintRows(rows), savedAt: Date.now() };
     localStorage.setItem(PRODUCT_CACHE_KEY, JSON.stringify(payload));
-  } catch (e) { /* ignore */ }
+  } catch (e) { }
 }, 350);
 
-// Status pill
 function updateDataStatus(state = "idle", message = ""){
   const el = document.getElementById("dataStatus");
   if (!el) return;
@@ -2688,20 +2413,19 @@ function updateDataStatus(state = "idle", message = ""){
   );
 }
 
-// Wire Refresh button once
 (function bindRefreshOnce(){
   const btn = document.getElementById("refreshData");
   if (!btn || btn._bound) return;
   btn._bound = true;
   btn.addEventListener("click", async () => {
     try {
-      clearProductCache(); // clears session + local
+      clearProductCache(); 
       updateDataStatus("loading", "Refreshing…");
       ALL_ROWS = []; FILTERED_ROWS = []; _pageCursor = 0; _noMorePages = false;
       showSkeletonRows?.(8);
-      await loadNextPage(); // or your full preloadAllPages()
+      await loadNextPage(); 
       removeSkeletonRows?.();
-      saveProductCache(ALL_ROWS); // persist fresh
+      saveProductCache(ALL_ROWS); 
       updateDataStatus("fresh", "Up to date • " + new Date().toLocaleTimeString());
       showToast?.("Data refreshed.");
     } catch (e){
@@ -2711,10 +2435,8 @@ function updateDataStatus(state = "idle", message = ""){
   }, { passive: true });
 })();
 
-
-// ======= Background preloading (no user interaction required) =======
 const AUTO_PRELOAD_ALL = true;
-const MAX_BACKGROUND_PAGES = Infinity;         // limit how many windows to fetch in background
+const MAX_BACKGROUND_PAGES = Infinity;         
 
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
@@ -2736,10 +2458,8 @@ async function preloadAllPages() {
   }
 }
 function renderTableAppendChunked(rows, startIdx = 0){
-
   let i = startIdx;
   function work(deadline){
-    // Append in RENDER_CHUNK slices while we still have idle time
     while (i < rows.length && deadline.timeRemaining() > 1){
       const end = Math.min(i + RENDER_CHUNK, rows.length);
       renderTableAppend(rows.slice(i, end));
@@ -2750,26 +2470,18 @@ function renderTableAppendChunked(rows, startIdx = 0){
   ric(work);
 }
 
-// ====================== Main Flow ========================
-// Full replacement for listSheetData()
 async function listSheetData(){
   console.time("listSheetData");
   try {
-    // ===== UI: start loading =====
     try { showLoadingBar?.(true, "Initializing…"); } catch {}
     try { bumpLoadingTo?.(8, "Loading Google API client…"); } catch {}
     try { updateDataStatus?.("loading", "Starting…"); } catch {}
-
-    // ===== Optional: render from cache immediately (if available) =====
     let renderedFromCache = false;
     try {
-      // Your existing cache path should hydrate window.ALL_ROWS if present
       renderedFromCache = __renderFromCacheNow?.() || false;
       if (renderedFromCache) {
         try {
-          // default filter = everything
           window.FILTERED_ROWS = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.slice() : [];
-          // If virtual table exists, paint it now; otherwise, fallback to old renderer
           if (document.getElementById("table-viewport")) {
             if (!listSheetData.__vtInit && typeof initVirtualTable === "function") {
               initVirtualTable(window.FILTERED_ROWS);
@@ -2778,7 +2490,7 @@ async function listSheetData(){
               updateVirtualRows(window.FILTERED_ROWS);
             }
             const tc = document.getElementById("table-container");
-            if (tc) tc.style.display = "none"; // keep legacy table hidden
+            if (tc) tc.style.display = "none"; 
           } else if (typeof renderTableAll === "function") {
             renderTableAll(window.FILTERED_ROWS);
           }
@@ -2786,41 +2498,29 @@ async function listSheetData(){
         } catch {}
       }
     } catch {}
-
-    // ===== Always refresh from network for truth =====
     try { bumpLoadingTo?.(25, "Fetching sheet metadata…"); } catch {}
-
-    // Reset accumulators & paging flags
     window.ALL_ROWS = [];
     try { window.FILTERED_ROWS = []; } catch {}
     try { _noMorePages = false; _isLoadingPage = false; _pageCursor = 0; } catch {}
-
-    // Load ALL pages and set EXPECTED_ROW_COUNT internally
     try { bumpLoadingTo?.(45, "Loading rows…"); } catch {}
-    await preloadAllPages(); // fills ALL_ROWS and sets expected via A:A - 1
+    await preloadAllPages(); 
 
-    // ===== Prepare filtered view =====
     window.FILTERED_ROWS = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.slice() : [];
-
-    // ===== Paint using the virtual table (fast path) =====
     if (document.getElementById("table-viewport")) {
       if (!listSheetData.__vtInit && typeof initVirtualTable === "function") {
-        initVirtualTable(window.FILTERED_ROWS);       // first-time init
+        initVirtualTable(window.FILTERED_ROWS);       
         listSheetData.__vtInit = true;
       } else if (typeof updateVirtualRows === "function") {
-        updateVirtualRows(window.FILTERED_ROWS);      // subsequent refreshes
+        updateVirtualRows(window.FILTERED_ROWS);     
       }
-      // Ensure legacy table stays hidden
       const tc = document.getElementById("table-container");
       if (tc) tc.style.display = "none";
     } else {
-      // ===== Fallback: legacy full render if viewport not present =====
       if (typeof renderTableAll === "function") {
         renderTableAll(window.FILTERED_ROWS);
       }
     }
 
-    // ===== Status / progress =====
     try { updateProgressLabelFromCounts?.(window.ALL_ROWS.length); } catch {}
     try { verifyRecordCount?.(); } catch {}
 
@@ -2837,7 +2537,6 @@ async function listSheetData(){
     try { updateDataStatus?.("error", "Load failed"); } catch {}
     try { showToast?.("Error loading sheet (see console)."); } catch {}
   } finally {
-    // ===== UI: finish loading =====
     try { bumpLoadingTo?.(100, "Ready"); } catch {}
     try { setTimeout(() => showLoadingBar?.(false), 350); } catch {}
     try { setTimeout(() => __maybeHideOverlay?.(), 0); } catch {}
@@ -2858,14 +2557,14 @@ async function listSheetData(){
     try { setControlsEnabledState?.(); } catch {}
     try {
       refreshCategoriesFromAllRows?.();
-      refreshVendorsFromAllRows();   // ← add this
+      refreshVendorsFromAllRows();  
 
       applyFilters?.({ render: true, sort: "stable" });
     } catch {}
 
     try { wireControlsOnce?.(); } catch {}
 
-    // ✅ Build a real status string (no "...")
+
     try {
       const ts = cached.savedAt ? new Date(cached.savedAt).toLocaleTimeString() : "";
       updateDataStatus?.("fresh", ts ? `Loaded from cache • ${ts}` : "Loaded from cache");
@@ -2878,9 +2577,7 @@ async function listSheetData(){
   }
 })();
 
-// === CONFIG ===
-// === VENDOR CONFIG + HELPERS (place near the very top, before earlyHydrateIfCached) ===
-var VENDOR_FIELD = "Vendor";  // use var to avoid TDZ when called early
+var VENDOR_FIELD = "Vendor";  
 
 function getVendorName(row){
   if (!row || typeof row !== "object") return "";
@@ -2900,9 +2597,6 @@ function computeVendorsList(){
   return Array.from(set).sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:"base"}));
 }
 
-
-
-// Populate #vendorFilter options (keeps current selection if possible)
 function refreshVendorsFromAllRows() {
   const sel = document.getElementById("vendorFilter");
   if (!sel) return;
@@ -2930,8 +2624,6 @@ function refreshVendorsFromAllRows() {
   }
 }
 
-// ====================== Controls Wiring ===================
-
 function wireControlsOnce() {
   if (window._controlsWired) return;
   window._controlsWired = true;
@@ -2940,9 +2632,8 @@ function wireControlsOnce() {
   const vendor = document.getElementById("vendorFilter");
   const catSel = document.getElementById("categoryFilter");
   const clear  = document.getElementById("clearFilters");
-  const sortBy = document.getElementById("sortBy"); // optional
+  const sortBy = document.getElementById("sortBy"); 
 
-  // Initial population (idempotent)
   try { refreshVendorsFromAllRows(); } catch {}
   try { typeof refreshCategoriesFromAllRows === "function" && refreshCategoriesFromAllRows(); } catch {}
 
@@ -2971,7 +2662,7 @@ function wireControlsOnce() {
 
   if (sortBy) sortBy.addEventListener("change", () => {
     window.USER_INTERACTED = true;
-    applyFilters({ render: true, sort: "stable" }); // sort read inside applyFilters
+    applyFilters({ render: true, sort: "stable" }); 
   });
 
   if (clear) clear.addEventListener("click", () => {
@@ -2988,9 +2679,6 @@ function wireControlsOnce() {
   });
 }
 
-
-
-// ====================== Toast/UX/Utils =========================
 function showToast(message = "Done") {
   const el = document.getElementById("toast");
   if (!el) return;
@@ -3017,8 +2705,8 @@ function showEl(id, show) {
 function setDisabled(id, disabled){
   const el = document.getElementById(id);
   if (!el) return;
-  el.disabled = !!disabled;               // <-- this is what re-enables the control
-  el.classList.toggle("is-disabled", !!disabled); // optional styling hook
+  el.disabled = !!disabled;              
+  el.classList.toggle("is-disabled", !!disabled); 
 }
 document.addEventListener("DOMContentLoaded", () => {
   if (!window.__SKIP_BOOTSTRAP) {
@@ -3038,13 +2726,8 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 })();
 
-
-
-
 console.debug("[boot] cache?", !!loadProductCache7d?.(), 
               "skip?", !!window.__SKIP_BOOTSTRAP);
-
-// Auto-refresh every 5 minutes if signed in
 setInterval(() => {
   const signedIn = !!gapi.client.getToken()?.access_token;
   if (signedIn) {
@@ -3055,14 +2738,9 @@ setInterval(() => {
   }
 }, 300000);
 
-// Restore staged state ASAP
 document.addEventListener("DOMContentLoaded", () => {
   stageRestoreFromLocalStorage();
 });
-
-
-
-
 
 async function resolveSheetTitle(spreadsheetId, gidNumber) {
   if (_pageTitle) return _pageTitle;
@@ -3079,14 +2757,11 @@ async function fetchRowsWindow(spreadsheetId, gidNumber, pageIdx, pageSize) {
   dbg("[fetchRowsWindow] pageIdx:", pageIdx, "pageSize:", pageSize);
 
   const title = await resolveSheetTitle(spreadsheetId, gidNumber);
-  // Header fetched once per session and memoized
   const header = await getHeaderCached(spreadsheetId, title);
   dbg('[fetchRowsWindow] header length:', header.length);
-
   const startRow = (pageIdx * pageSize) + 2;
   const endRow   = startRow + pageSize - 1;
   const range    = `'${title}'!A${startRow}:H${endRow}`;
-
   const res = await sheetsValuesGet({
     spreadsheetId, range, valueRenderOption: 'UNFORMATTED_VALUE'
   });
@@ -3163,10 +2838,6 @@ function transformWindowRows(header, dataRows) {
   return rows;
 }
 
-
-
-
-
 function renderTableAppend(rows) {
 if (!hasAnyActiveFilter()) { return; }
   dbg("[renderTableAppend] appending rows:", rows ? rows.length : 0);
@@ -3216,7 +2887,7 @@ const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
     });
   }
 }
-// Bind once for all future renders
+
 function bindTableHandlersOnce(){
   const tbody = document.querySelector("#data-table tbody");
   if (!tbody || tbody._bound) return;
@@ -3228,15 +2899,13 @@ function bindTableHandlersOnce(){
     const qtyInput = document.getElementById(`qty_${idx}`);
     let qty = Number(qtyInput?.value || 1);
     if (!Number.isFinite(qty) || qty <= 0) qty = 1;
-    const row = FILTERED_ROWS[idx]; // matches data-idx we rendered
+    const row = FILTERED_ROWS[idx]; 
     if (row) addToCart(row, qty);
   }, { passive: true });
 
   tbody._bound = true;
 }
 
-
-// Call this once after you create the table element (and on startup)
 bindTableHandlers();
 
 function showSkeletonRows(n=6){
@@ -3259,9 +2928,6 @@ function removeSkeletonRows(){
 }
 const hadActive = hasAnyActiveFilter();
 
-
-
-
 function setupInfiniteScroll() {
   const container = document.getElementById('table-container') || document.body;
   if (document.getElementById('infinite-sentry')) return;
@@ -3275,15 +2941,13 @@ function setupInfiniteScroll() {
   }, { rootMargin: '1200px 0px 1200px 0px' });
   io.observe(sentry);
 }
-// ensure global handlers for Google script onload
+
 if (typeof window !== 'undefined') {
   window.gapiLoaded = gapiLoaded;
   window.gisLoaded  = gisLoaded;
 }
 
-
-// ===== Singleflight + caches for sheet metadata & header =====================
-const __singleflight = new Map(); // key -> Promise
+const __singleflight = new Map(); 
 function singleflight(key, fn){
   if (__singleflight.has(key)) return __singleflight.get(key);
   const p = (async () => {
@@ -3295,8 +2959,8 @@ __singleflight.delete(key); }
   return p;
 }
 
-const SHEET_META_CACHE = new Map();  // spreadsheetId -> meta
-const HEADER_CACHE = new Map();      // `${spreadsheetId}|${range}` -> header array
+const SHEET_META_CACHE = new Map();  
+const HEADER_CACHE = new Map();      
 
 
 async function fetchSpreadsheetMeta(spreadsheetId, apiKey){
@@ -3310,7 +2974,6 @@ async function fetchSpreadsheetMeta(spreadsheetId, apiKey){
   });
   return await p;
 }
-
 
 async function fetchSheetHeader(spreadsheetId, apiKey, sheetName, startCol="A", endCol="H"){
   const range = `'${sheetName}'!${startCol}1:${endCol}1`;
@@ -3329,37 +2992,30 @@ async function fetchSheetHeader(spreadsheetId, apiKey, sheetName, startCol="A", 
 
 function __renderFromCacheNow(reason = "pageshow"){
   try {
-    // 1) Have cached rows?
     if (!Array.isArray(window.ALL_ROWS) || window.ALL_ROWS.length === 0) return false;
-
-    // 2) Reset paging flags so a later network refresh can still run
     try { window._pageCursor = 0; } catch {}
     try { window._noMorePages = false; } catch {}
     try { window.__ROWS_DONE = false; } catch {}
-
-    // 3) Rebuild derived UI from ALL_ROWS (categories/vendors)
     try { refreshCategoriesFromAllRows?.(); } catch {}
     try { refreshVendorsFromAllRows?.(); } catch {}
 
-    // 4) Default view = everything; filters will narrow later
     window.FILTERED_ROWS = window.ALL_ROWS.slice();
     window.USER_INTERACTED = true;
 
-    // 5) Prefer the virtual viewport if present
     const hasVirtual = !!document.getElementById("table-viewport");
     if (hasVirtual && typeof initVirtualTable === "function") {
-      // initial paint (or update if already initialized)
+
       if (!__renderFromCacheNow.__vtInit) {
         initVirtualTable(window.FILTERED_ROWS);
         __renderFromCacheNow.__vtInit = true;
       } else if (typeof updateVirtualRows === "function") {
         updateVirtualRows(window.FILTERED_ROWS);
       }
-      // keep legacy table hidden when using virtualization
+     
       const tc = document.getElementById("table-container");
       if (tc) tc.style.display = "none";
     } else {
-      // Fallback: legacy full render (slower for 10k+ rows)
+      
       const tc = document.getElementById("table-container");
       if (tc) tc.style.display = "";
       if (typeof renderTableAll === "function") {
@@ -3369,7 +3025,6 @@ function __renderFromCacheNow(reason = "pageshow"){
       }
     }
 
-    // 6) Status + badge
     try {
       const exp = (typeof getExpectedRowCount === "function") ? getExpectedRowCount() : 0;
       updateDataStatus?.("fresh", `Loaded ${window.ALL_ROWS.length}${exp ? ` / ${exp}` : ""} (cache)…`);
@@ -3380,11 +3035,6 @@ function __renderFromCacheNow(reason = "pageshow"){
       }
     } catch {}
 
-    // 7) Breadcrumbs
-    console.log("[cache] __renderFromCacheNow:", {
-      reason, rows: window.ALL_ROWS.length, virtual: hasVirtual
-    });
-
     return true;
   } catch (e) {
     console.warn("[cache] __renderFromCacheNow failed:", e);
@@ -3392,16 +3042,11 @@ function __renderFromCacheNow(reason = "pageshow"){
   }
 }
 
-
-
-// ==== Show from cache when navigating back (BFCache or normal back) ====
 window.addEventListener("pageshow", (ev) => {
   if (ev.persisted) { if (__renderFromCacheNow("BFCache")) return; }
   if (window.__SKIP_BOOTSTRAP) { if (__renderFromCacheNow("skip-bootstrap")) return; }
-  // otherwise normal bootstrap will run elsewhere
 });
 
-// ==== Also try at DOM ready (cold reload with warm cache) ====
 document.addEventListener("DOMContentLoaded", () => {
   if (__renderFromCacheNow("DOMContentLoaded")) return;
   if (!window.__SKIP_BOOTSTRAP) {

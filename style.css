@@ -110,7 +110,7 @@ input[type="number"] {
   width:80%;
   background:#fff;
   color:#111827;
-  /* NEW: allow shrinking inside grids */
+  text-align:center !important;
   min-width:0;
 }
 
@@ -185,14 +185,20 @@ thead th{
   text-align:left; padding:10px; border-bottom:1px solid var(--border);
   font-weight:600; font-size:.95rem;
 }
-tbody td{ padding:8px 10px; border-bottom:1px solid #eee; vertical-align: middle; }
+thead th{
+
+    text-align:center !important;
+}
+
+tbody td{ padding:8px 10px; border-bottom:1px solid #eee; vertical-align: middle; text-align:center !important;
+ }
 /* NEW: allow wrapping of long content that would otherwise overflow */
 
 tbody tr:hover{ background:var(--hover); }
 tbody tr:last-child td { border-bottom: none; }
 
 .qty-input{ width:80px; padding:6px; border:1px solid var(--border); border-radius: 8px; }
-.row-actions{ display:flex; gap:8px; align-items:center; }
+.row-actions{ display:flex; gap:0px; align-items:center; }
 
 /* ===== Mobile: centered product cards, sticky top ===== */
 @media (max-width: 720px){
