@@ -5,7 +5,7 @@
   const AIRTABLE_CONFIG = Object.freeze({
     API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054", // <- REPLACE with your real Airtable PAT
     BASE_ID: "appeNSp44fJ8QYeY5",
-    TABLE_ID: "tblRp5bukUiw9tX9j",       // Fill-In table (where we create/patch)
+    TABLE_ID: "tblRp5bukUiw9tX9j",
     VIEW_ID: "viwh9UWnGFNAoQwcT",
 
     // Source tables for linked/synced dropdowns
@@ -19,19 +19,23 @@
         TABLE_ID: "tblwEBpPQ7J6ogSIE",
         VIEW_ID:  "viwXQMXGlrIfJZnTT",
         LABEL_CANDIDATES: ["Vanir Office","Branch","Name","Division","Office"]
+      },
+      // Customers (populate "Customer" dropdown from Client Name)
+      CUSTOMER: {
+        TABLE_ID: "tblkXhrCv8229ctCh",
+        VIEW_ID:  "Grid view",
+        LABEL_CANDIDATES: ["Client Name","Client","Name"]
       }
     }
   });
 
-  // ---------- Logging Utility (safe, toggleable, pretty) ----------
+  // ---------- Logging Utility ----------
   const AIRTABLE_LOGGER = (() => {
     const LEVELS = { silent: 0, error: 1, warn: 2, info: 3, debug: 4, trace: 5 };
     const QS = new URLSearchParams((typeof location !== "undefined" && location.search) || "");
     const qsLevel = (QS.get("atlog") || "").toLowerCase();
     const stored = (typeof localStorage !== "undefined" && localStorage.getItem("AIRTABLE_LOG_LEVEL")) || "";
-    let _level = LEVELS[qsLevel] != null ? qsLevel
-              : LEVELS[stored] != null  ? stored
-              : "info";
+    let _level = (qsLevel in LEVELS) ? qsLevel : (stored in LEVELS) ? stored : "info";
 
     function setLevel(lvl) { if (lvl in LEVELS) { _level = lvl; try { localStorage.setItem("AIRTABLE_LOG_LEVEL", _level); } catch {} } }
     function getLevel() { return _level; }
@@ -62,10 +66,10 @@
       info:  (tag,...a) => _log("info", tag,...a),
       warn:  (tag,...a) => _log("warn", tag,...a),
       error: (tag,...a) => _log("error",tag,...a),
-      group(tag, label) { if (!_enabled("debug")) return; try { console.group(`%cAT %c${tag} ${label||""}`, baseStyle+tagStyle, baseStyle+dbgStyle); } catch {} },
-      groupEnd() { if (!_enabled("debug")) return; try { console.groupEnd(); } catch {} },
-      time(label) { if (!_enabled("debug")) return; try { console.time(`AT ${label}`); } catch {} },
-      timeEnd(label) { if (!_enabled("debug")) return; try { console.timeEnd(`AT ${label}`); } catch {} },
+      group(tag, label) { try { console.group(`%cAT %c${tag} ${label||""}`, baseStyle+tagStyle, baseStyle+dbgStyle); } catch {} },
+      groupEnd() { try { console.groupEnd(); } catch {} },
+      time(label) { try { console.time(`AT ${label}`); } catch {} },
+      timeEnd(label) { try { console.timeEnd(`AT ${label}`); } catch {} },
       maskToken(tok) { if (!tok || typeof tok !== "string") return tok; const raw = tok.replace(/^Bearer\s+/i,""); if (raw.length<=8) return "••"+raw.length; return raw.slice(0,4)+"…"+raw.slice(-4); },
       redactHeaders(h) { try { const out = { ...(h||{}) }; if (out.Authorization) out.Authorization = `Bearer ${this.maskToken(out.Authorization)}`; return out; } catch { return h; } }
     };
@@ -120,14 +124,8 @@
     async _fetch(url, options = {}, tag = "fetch") {
       AIRTABLE_LOGGER.group(tag, `${options.method||"GET"} ${url}`);
       const safeOptions = { ...options, headers: AIRTABLE_LOGGER.redactHeaders(options.headers||{}) };
-      if (AIRTABLE_LOGGER.getLevel() === "debug" || AIRTABLE_LOGGER.getLevel() === "trace") {
-        AIRTABLE_LOGGER.debug(tag, "request options", { ...safeOptions, body: options.body ? tryParseJson(options.body) : undefined });
-      } else {
-        AIRTABLE_LOGGER.info(tag, "request", { method: options.method||"GET", url });
-      }
       const t0 = performance.now ? performance.now() : Date.now();
       try {
-        if (options.signal) { const sig=options.signal; if (sig.aborted) AIRTABLE_LOGGER.warn(tag,"aborted signal"); sig.addEventListener("abort",()=>AIRTABLE_LOGGER.warn(tag,"Request aborted",{reason:sig.reason}),{once:true}); }
         const res = await fetch(url, options);
         const ms = (performance.now?performance.now():Date.now()) - t0;
         AIRTABLE_LOGGER.info(tag, "response", { ok:res.ok, status:res.status, durationMs:Math.round(ms) });
@@ -137,7 +135,6 @@
         AIRTABLE_LOGGER.error(tag, "network error", { error:err, durationMs:Math.round(ms) });
         throw err;
       } finally { AIRTABLE_LOGGER.groupEnd(); }
-      function tryParseJson(body){ try { return JSON.parse(body); } catch { return body; } }
     }
 
     // ---- main table ops ----
@@ -147,16 +144,15 @@
       while (url) {
         page++; AIRTABLE_LOGGER.time(`page ${page}`);
         const res = await this._fetch(url,{headers:this.headers(),signal},"list");
-        if (!res.ok) throw new Error(`List failed: ${res.status} ${await safeText(res)}`);
+        if (!res.ok) throw new Error(`List failed: ${res.status} ${await res.text()}`);
         const j = await res.json(); const len = (j.records||[]).length;
         out.push(...(j.records||[])); url = j.offset ? this.listUrl(j.offset) : null; AIRTABLE_LOGGER.timeEnd(`page ${page}`);
         AIRTABLE_LOGGER.info("list",`page ${page} records`, len);
       }
       AIRTABLE_LOGGER.info("fetchAllRecords","total", out.length); AIRTABLE_LOGGER.groupEnd(); return out;
-      async function safeText(resp){ try { return await resp.text(); } catch { return ""; } }
     }
 
-    /** Legacy helper: scans current view for distinct values. Use only for plain text/single-select fields. */
+    /** Legacy helper to scan current view for distinct values. */
     async fetchDropdowns({
       branchField = "Branch",
       fieldMgrField = "Field Manager",
@@ -167,8 +163,8 @@
       const setB = new Set(), setFM = new Set(), setN = new Set(), setR = new Set();
       for (const r of recs) {
         const f = r.fields || {};
-        if (f[branchField] && typeof f[branchField] === "string") setB.add(String(f[branchField]));
-        if (f[fieldMgrField] && typeof f[fieldMgrField] === "string") setFM.add(String(f[fieldMgrField]));
+        if (typeof f[branchField] === "string") setB.add(f[branchField]);
+        if (typeof f[fieldMgrField] === "string") setFM.add(f[fieldMgrField]);
         if (f[neededByField]) setN.add(String(f[neededByField]));
         if (f[reasonField]) setR.add(String(f[reasonField]));
       }
@@ -203,7 +199,6 @@
           if (typeof val === "number") return String(val);
         }
       }
-      // fallback: first non-empty string-ish field
       for (const [k,v] of Object.entries(fields||{})) {
         if (v == null) continue;
         if (Array.isArray(v) && v.length && typeof v[0] !== "object") return String(v[0]);
@@ -225,7 +220,7 @@
         if (!id || !label) continue;
         options.push({ id, label });
         idToLabel.set(id, label);
-        if (!labelToId.has(label)) labelToId.set(label, id); // first wins
+        if (!labelToId.has(label)) labelToId.set(label, id);
       }
       options.sort((a,b)=>a.label.localeCompare(b.label, undefined, {numeric:true, sensitivity:"base"}));
       return { options, idToLabel, labelToId };
@@ -238,6 +233,11 @@
 
     async fetchBranchOptions() {
       const src = this.sources.BRANCH || {};
+      return this.fetchOptionsFromSource({ tableId: src.TABLE_ID, viewId: src.VIEW_ID, labelCandidates: src.LABEL_CANDIDATES || [] });
+    }
+
+    async fetchCustomerOptions() {
+      const src = this.sources.CUSTOMER || {};
       return this.fetchOptionsFromSource({ tableId: src.TABLE_ID, viewId: src.VIEW_ID, labelCandidates: src.LABEL_CANDIDATES || [] });
     }
 
@@ -280,7 +280,6 @@
     static getLogLevel() { return AIRTABLE_LOGGER.getLevel(); }
   }
 
-  // Expose globals
   global.AirtableService = AirtableService;
   global.AIRTABLE_CONFIG = AIRTABLE_CONFIG;
   global.AIRTABLE_LOGGER = AIRTABLE_LOGGER;

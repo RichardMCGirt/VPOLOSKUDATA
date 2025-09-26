@@ -7,44 +7,11 @@
     content="width=device-width, initial-scale=1, viewport-fit=cover"
   />
   <title>Your Cart — Product & VPO Calculator</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css"/>
+    <link rel="stylesheet" href="cart.css" />
+
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-  <style>
-    :root { --page-max: 980px; }
-    body { margin: 0 auto; max-width: var(--page-max); padding: 12px; }
-    header.cart-header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:8px 0 12px; }
-    .cart-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    .muted-sm { color: var(--muted); font-size: .9rem; }
-    .stack { display:flex; flex-direction:column; gap:6px; }
-    .field-label { font-size: .8rem; color: var(--muted); }
-    .cart-note { margin: 8px 0 14px; }
-    .sep { height: 1px; background: var(--border); margin: 12px 0; }
 
-    .sticky-actions { position: sticky; bottom: 0; display:flex; justify-content:flex-end; gap:10px; padding:10px 12px; background: var(--card, #fff); border-top: 1px solid rgba(0,0,0,.08); box-shadow: 0 -6px 16px rgba(0,0,0,.06); z-index: 40; }
-    .full-width-mobile { width: auto; }
-    @media (max-width: 640px) { .full-width-mobile { width: 100%; } body { padding-bottom: calc(12px + env(safe-area-inset-bottom)); } }
-
-    #cart-table { width: 100%; border-collapse: collapse; }
-    #cart-table th, #cart-table td { vertical-align: top; }
-
-    #fillin-section.card { padding: 12px; border: 1px solid rgba(0,0,0,.08); border-radius: 12px; background: var(--card, #fff); margin-bottom: 12px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }
-    .field { display: flex; flex-direction: column; gap: 6px; }
-    .field input[type="text"], .field input[type="date"], .field select, .field textarea, .field input[type="number"] { padding: 10px; border: 1px solid var(--border, #ddd); border-radius: 10px; font-size: 14px; width: 100%; box-sizing: border-box; background: var(--card, #fff); color: inherit; }
-    .field textarea { min-height: 80px; resize: vertical; }
-    .right { display:flex; justify-content:flex-end; gap:10px; align-items:center; }
-    .pill { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; font-size:12px; background:rgba(0,0,0,.04); }
-    #airtableBanner { display:none; margin-bottom:10px; padding:10px; border-radius:8px; background:#fff2cc; border:1px solid #ffe58f; color:#7a5a00; }
-
-    /* Totals layout */
-    #totals { display:grid; grid-template-columns: 1fr auto; gap:8px 16px; align-items:center; }
-    #totals .label { justify-self:end; font-weight: 500; }
-    #totals .value { justify-self:end; }
-    #totals .grand { font-size: 1.1rem; font-weight: 700; }
-    #globalMarginWrap { display:flex; justify-content:flex-end; margin: 8px 0 12px; }
-    #globalMarginWrap .field { max-width: 200px; }
-  </style>
 </head>
 <body>
 
@@ -60,8 +27,7 @@
           </span>
           <span class="btn__text">Continue Browsing</span>
         </a>
-              <h1 class="h2">Your Cart</h1>
-
+        <h1 class="h2">Your Cart</h1>
         <button id="clearCart" class="btn danger" aria-label="Clear all items">Clear All</button>
       </div>
     </header>
@@ -77,9 +43,10 @@
       </header>
 
       <div class="grid" role="group" aria-label="Fill-In Request Fields">
+        <!-- Customer dropdown populated from tblkXhrCv8229ctCh.Client Name -->
         <div class="field">
-          <label class="field-label" for="customerName">Customer Name</label>
-          <input id="customerName" type="text" placeholder="Customer Name" autocomplete="name" />
+          <label class="field-label" for="customerSelect">Customer</label>
+          <select id="customerSelect"><option value="">—</option></select>
         </div>
 
         <div class="field">
@@ -182,9 +149,15 @@
 
   <div id="toast" role="status" aria-live="polite" aria-atomic="true" style="display:none;">Done</div>
 
-  <!-- NEW: Airtable service BEFORE cart.js -->
+  <!-- Load Airtable service first so cart.js can use it if needed -->
+  <script src="airtable.service.js"></script>
+
+
+
+  <!-- Your existing cart code last -->
   <script src="cart.js"></script>
-    <script src="airtable.service.js"></script>
+    <script src="patch.js"></script>
+
 
 </body>
 </html>
