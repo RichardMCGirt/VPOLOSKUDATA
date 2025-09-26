@@ -198,7 +198,6 @@ tbody tr:hover{ background:var(--hover); }
 tbody tr:last-child td { border-bottom: none; }
 
 .qty-input{ width:80px; padding:6px; border:1px solid var(--border); border-radius: 8px; }
-.row-actions{ display:flex; gap:0px; align-items:center; }
 
 /* ===== Mobile: centered product cards, sticky top ===== */
 @media (max-width: 720px){
@@ -510,3 +509,5 @@ tbody tr:last-child td { border-bottom: none; }
   }
   .vrow > div:nth-child(5), .vhead > div:nth-child(5){ display:none; }
 }
+#data-table td.row-actions{ /* table-cell (default) */ vertical-align: middle; text-align:center; }
+#data-table td.row-actions .row-actions__inner{ display:inline-flex; align-items:center; gap:8px; }
