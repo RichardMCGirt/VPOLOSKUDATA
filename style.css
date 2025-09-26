@@ -434,3 +434,73 @@ tbody tr:last-child td { border-bottom: none; }
 .status-pill[data-state="fresh"]  { background:#ecfdf5; border-color:#a7f3d0; }   /* green hint */
 .status-pill[data-state="error"]  { background:#fef2f2; border-color:#fecaca; }   /* red hint */
 
+/* === Virtual table fixes === */
+#table-viewport{
+  height:72vh;
+  overflow:auto;
+  position:relative;
+  border:1px solid var(--border);
+  background:#fff;
+  border-radius:12px;
+  margin-top:10px;
+}
+
+/* The big spacer that gives us the scrollbar height */
+#table-spacer{ position:relative; width:100%; }
+
+/* Fixed-height, absolutely-positioned rows */
+.vrow{
+  position:absolute; left:0; right:0;
+  height:36px;                 /* must match JS VT.rowH */
+  display:grid;
+  grid-template-columns: 160px 180px 80px 1fr 220px 90px 100px 110px; /* vendor, sku, uom, desc, helper, mult, cost, price */
+  gap:8px;
+  align-items:center;
+  padding:0 8px;
+  border-bottom:1px solid #f0f0f0;
+  box-sizing:border-box;
+  will-change: transform;
+  font-size:14px;
+  line-height:1.2;
+}
+
+/* IMPORTANT: prevent wrapping so fixed-height rows never overflow */
+.vrow > div{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  min-width:0;          /* allow grid columns to shrink */
+}
+
+/* Right-align numeric columns (Multiple, Cost, Price) */
+.vrow > div:nth-child(6),
+.vrow > div:nth-child(7),
+.vrow > div:nth-child(8){
+  text-align:right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sticky header uses the same grid so columns line up */
+.vhead{
+  display:grid;
+  grid-template-columns: 160px 180px 80px 1fr 220px 90px 100px 110px;
+  gap:8px;
+  align-items:center;
+  padding:8px;
+  font-weight:600;
+  border-bottom:1px solid #ddd;
+  position:sticky; top:0;
+  background:#fff;
+  z-index:1;
+}
+
+/* Subtle zebra striping for readability */
+.vrow:nth-child(2n){ background:#fafafa; }
+
+/* Narrow screens: make columns more flexible */
+@media (max-width: 960px){
+  .vrow, .vhead{
+    grid-template-columns: 18% 18% 10% 1fr 0 12% 16% 16%; /* hide helper column via 0 width */
+  }
+  .vrow > div:nth-child(5), .vhead > div:nth-child(5){ display:none; }
+}

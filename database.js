@@ -327,11 +327,11 @@ async function loadNextPage(){
     });
 
     // Render
-    if (typeof renderTableAppendChunked === "function") {
-      await renderTableAppendChunked(transformed || []);
-    } else if (typeof renderTableAppend === "function") {
-      renderTableAppend(transformed || []);
-    }
+    //if (typeof renderTableAppendChunked === "function") {
+      //await renderTableAppendChunked(transformed || []);
+    //} else if (typeof renderTableAppend === "function") {
+     // renderTableAppend(transformed || []);
+   // }
 
     // Determine end: if fewer than requested came back, we’re done
     const got = Array.isArray(dataRows) ? dataRows.length : 0;
@@ -362,11 +362,9 @@ async function preloadAllPages(){
   _noMorePages = false;
   _pageCursor = 0;
 
-  // Resolve title once and set EXPECTED for UI
   const title = await resolveSheetTitle(SHEET_ID, DEFAULT_GID);
   const used = await getSheetUsedRowCount(SHEET_ID, title);
-  // used includes header. Subtract 1 to get the data row count; add back when comparing to ALL_ROWS
-  const expectedData = Math.max(0, used - 1);
+  const expectedData = Math.max(0, used - 1); // subtract header
   setExpectedRowCount(expectedData);
 
   console.time("sheet:full-load");
@@ -435,43 +433,19 @@ if (Array.isArray(ALL_ROWS) && ALL_ROWS.length > 0) {
   updateDataStatus?.("fresh", "Up to date • " + new Date().toLocaleTimeString());
 });
 
-function setExpectedRowCount(n, opts){
-  const { persist = true, updateUI = true } = opts || {};
-  const val = Math.max(0, Number(n) || 0);
-
-  // set global for runtime checks
-  window.EXPECTED_ROW_COUNT = val;
-
-  // persist for next session (used by verifyRecordCount)
-  if (persist) {
-    try { localStorage.setItem(EXPECTED_KEY, String(val)); } catch {}
-  }
-
-  // lightweight UI sync (optional)
-  if (updateUI) {
+function setExpectedRowCount(n){
+  try {
+    window.EXPECTED_ROW_COUNT = Number(n || 0);
     const badge = document.getElementById("fetch-count");
     if (badge) {
-      // If ALL_ROWS exists, show "actual / expected", else just expected
-      const actual = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.length : null;
-      badge.textContent = (actual != null) ? `${actual} / ${val}` : String(val);
-
-      // add ok/warn classes when we know both
-      if (actual != null) {
-        if (actual === val) { badge.classList.add("ok");   badge.classList.remove("warn"); }
-        else                { badge.classList.add("warn"); badge.classList.remove("ok");   }
-      }
+      const actual = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.length : 0;
+      badge.textContent = n ? `${actual} / ${n}` : String(actual);
     }
+  } catch {}
+}
 
-    // Optional status pill integration, if you have it
-    if (typeof updateDataStatus === "function" && Array.isArray(window.ALL_ROWS)) {
-      const actual = window.ALL_ROWS.length;
-      const ok = (val === 0) ? true : (actual === val);
-      const msg = (val === 0) ? `Loaded ${actual}` : `Loaded ${actual}${ok ? " ✓" : ` / ${val}`}`;
-      updateDataStatus(ok ? "fresh" : "warn", msg);
-    }
-  }
-
-  return val; // return the normalized value for convenience
+function getExpectedRowCount(){
+  return Number(window.EXPECTED_ROW_COUNT || 0);
 }
 function getExpectedRowCount(){
   if (EXPECTED_ROW_COUNT > 0) return EXPECTED_ROW_COUNT;
@@ -1572,7 +1546,7 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     let   px      = colMap.priceExtended != null ? parseNumber(row[colMap.priceExtended]) : null;
 
     const cleanSku = norm(sku);
-    if (!cleanSku) continue;
+if (!cleanSku && !nm(rawDesc)) continue;
 
     // Compute priceExtended if missing: px = multiple * cost
     if (px == null) {
@@ -1992,6 +1966,159 @@ bindTableHandlersOnce?.();
 
   return window.FILTERED_ROWS;
 }
+
+// ===== Virtual Table Renderer =====
+let VT = {
+  rows: [],          // current datasource (e.g., FILTERED_ROWS)
+  rowH: 36,          // measured row height (px)
+  buffer: 12,        // rows above/below viewport
+  poolSize: 0,       // number of DOM row nodes in pool
+  pool: [],          // DOM row nodes we recycle
+  scroller: null,    // #table-viewport
+  spacer: null,      // #table-spacer
+  firstIdx: 0,       // first rendered index
+  lastIdx: -1,       // last rendered index
+  raf: 0,            // requestAnimationFrame id
+};
+
+function initVirtualTable(initialRows) {
+  VT.scroller = document.getElementById("table-viewport");
+  VT.spacer   = document.getElementById("table-spacer");
+  VT.rows     = Array.isArray(initialRows) ? initialRows : [];
+
+  // measure row height once using a temp node
+  VT.rowH = Math.max(24, measureRowHeight());
+
+  // pool size ~= visible rows + buffer; compute from viewport height
+  const vis = Math.ceil((VT.scroller.clientHeight || 600) / VT.rowH);
+  VT.poolSize = Math.max(30, vis + VT.buffer * 2);
+
+  // build pool
+  VT.pool = [];
+  VT.spacer.innerHTML = ""; // clear
+  for (let i = 0; i < VT.poolSize; i++) {
+    const n = document.createElement("div");
+    n.className = "vrow";
+    // 8 cells to match header columns
+    for (let c = 0; c < 8; c++) {
+      const cell = document.createElement("div");
+      n.appendChild(cell);
+    }
+    VT.spacer.appendChild(n);
+    VT.pool.push(n);
+  }
+
+  // set total height
+  VT.spacer.style.height = (VT.rows.length * VT.rowH) + "px";
+
+  // bind scroll (throttled via rAF)
+  VT.scroller.removeEventListener("scroll", onVirtualScroll);
+  VT.scroller.addEventListener("scroll", onVirtualScroll);
+  VT.firstIdx = 0;
+  VT.lastIdx  = -1;
+  // initial paint
+  scheduleVirtualPaint();
+}
+
+function measureRowHeight(){
+  const tmp = document.createElement("div");
+  tmp.className = "vrow";
+  // match structure
+  for (let c = 0; c < 8; c++) tmp.appendChild(document.createElement("div"));
+  tmp.style.visibility = "hidden";
+  tmp.style.position = "absolute";
+  tmp.style.top = "-9999px";
+  document.body.appendChild(tmp);
+  const h = tmp.getBoundingClientRect().height || 36;
+  document.body.removeChild(tmp);
+  return Math.round(h);
+}
+
+function onVirtualScroll(){
+  if (VT.raf) return;
+  VT.raf = requestAnimationFrame(() => {
+    VT.raf = 0;
+    paintVirtualSlice();
+  });
+}
+
+function scheduleVirtualPaint(){
+  if (VT.raf) cancelAnimationFrame(VT.raf);
+  VT.raf = requestAnimationFrame(() => {
+    VT.raf = 0;
+    paintVirtualSlice();
+  });
+}
+
+function paintVirtualSlice(){
+  if (!VT.scroller) return;
+  const scrollTop = VT.scroller.scrollTop|0;
+  const viewportH = VT.scroller.clientHeight|0;
+
+  const first = Math.max(0, Math.floor(scrollTop / VT.rowH) - VT.buffer);
+  const last  = Math.min(VT.rows.length - 1, Math.ceil((scrollTop + viewportH) / VT.rowH) + VT.buffer);
+
+  if (first === VT.firstIdx && last === VT.lastIdx) return;
+  VT.firstIdx = first;
+  VT.lastIdx  = last;
+
+  const need = Math.max(0, last - first + 1);
+  if (!need) return;
+
+  for (let i = 0; i < VT.poolSize; i++) {
+    const dom = VT.pool[i];
+    const dataIdx = first + i;
+    if (i >= need || dataIdx >= VT.rows.length) {
+      dom.style.transform = "translateY(-99999px)";
+      continue;
+    }
+    const r = VT.rows[dataIdx];
+    // position row
+    const y = dataIdx * VT.rowH;
+    dom.style.transform = `translateY(${y}px)`;
+
+    // fill cells (8 columns)
+    // Order: vendor, sku, uom, description, helper, mult, cost, priceExtended
+    const cells = dom.children;
+    cells[0].textContent = safeText(r.vendor);
+    cells[1].textContent = safeText(r.sku);
+    cells[2].textContent = safeText(r.uom);
+    cells[3].textContent = safeText(r.description);
+    cells[4].textContent = safeText(r.skuHelper);
+    cells[5].textContent = toFixedMaybe(r.uomMultiple);
+    cells[6].textContent = moneyMaybe(r.cost);
+    cells[7].textContent = moneyMaybe(r.priceExtended);
+  }
+}
+
+function safeText(v){
+  return (v==null) ? "" : String(v);
+}
+function toFixedMaybe(v){
+  if (v==null || v==="") return "";
+  const n = Number(v);
+  return Number.isFinite(n) ? (Math.round(n*100)/100).toString() : String(v);
+}
+function moneyMaybe(v){
+  if (v==null || v==="") return "";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return "$" + (Math.round(n*100)/100).toFixed(2);
+}
+
+/** Public: call when your datasource changes (filters/search). */
+function updateVirtualRows(newRows){
+  VT.rows = Array.isArray(newRows) ? newRows : [];
+  if (VT.spacer) {
+    VT.spacer.style.height = (VT.rows.length * VT.rowH) + "px";
+  }
+  if (VT.scroller) {
+    VT.scroller.scrollTop = 0; // reset to top so indices recalc cleanly
+  }
+  VT.firstIdx = 0; VT.lastIdx = -1;
+  scheduleVirtualPaint();
+}
+
 
 // Replace your "renderTableAll" (or add this helper) — uses chunked DOM writes.
 function renderTableAll(rows) {
@@ -2625,88 +2752,99 @@ function renderTableAppendChunked(rows, startIdx = 0){
 
 // ====================== Main Flow ========================
 // Full replacement for listSheetData()
-async function listSheetData() {
+async function listSheetData(){
+  console.time("listSheetData");
   try {
-    showLoadingBar?.(true, "Loading…");
-    bumpLoadingTo?.(10, "Checking cache…");
+    // ===== UI: start loading =====
+    try { showLoadingBar?.(true, "Initializing…"); } catch {}
+    try { bumpLoadingTo?.(8, "Loading Google API client…"); } catch {}
+    try { updateDataStatus?.("loading", "Starting…"); } catch {}
 
-    // 1) Try 7-day cache first
-    const cached = (typeof loadProductCache7d === "function") ? loadProductCache7d() : null;
-    const freshEnough = !!(cached && Array.isArray(cached.rows) && cached.rows.length);
-ALL_ROWS = [];
-await preloadAllPages();   // will load all 12,763+ rows across pages
+    // ===== Optional: render from cache immediately (if available) =====
+    let renderedFromCache = false;
+    try {
+      // Your existing cache path should hydrate window.ALL_ROWS if present
+      renderedFromCache = __renderFromCacheNow?.() || false;
+      if (renderedFromCache) {
+        try {
+          // default filter = everything
+          window.FILTERED_ROWS = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.slice() : [];
+          // If virtual table exists, paint it now; otherwise, fallback to old renderer
+          if (document.getElementById("table-viewport")) {
+            if (!listSheetData.__vtInit && typeof initVirtualTable === "function") {
+              initVirtualTable(window.FILTERED_ROWS);
+              listSheetData.__vtInit = true;
+            } else if (typeof updateVirtualRows === "function") {
+              updateVirtualRows(window.FILTERED_ROWS);
+            }
+            const tc = document.getElementById("table-container");
+            if (tc) tc.style.display = "none"; // keep legacy table hidden
+          } else if (typeof renderTableAll === "function") {
+            renderTableAll(window.FILTERED_ROWS);
+          }
+          updateDataStatus?.("fresh", `Loaded ${window.ALL_ROWS.length} (cache)…`);
+        } catch {}
+      }
+    } catch {}
 
-    if (cached) {
-      // hydrate from cache
-      window.ALL_ROWS = Array.isArray(cached.rows) ? cached.rows.slice() : [];
-      // if you track an expected total, set it here
-      try { typeof setExpectedRowCount === "function" && setExpectedRowCount(ALL_ROWS.length); } catch {}
+    // ===== Always refresh from network for truth =====
+    try { bumpLoadingTo?.(25, "Fetching sheet metadata…"); } catch {}
 
-      // enable inputs and render table/filters from cache
-      try {
-        window.FULLY_LOADED = true;
-        setControlsEnabledState?.();
-      } catch {}
-
-      try {
-        refreshCategoriesFromAllRows?.();
-        applyFilters?.({ render: true, sort: "stable" });
-      } catch {}
-
-      // 🔧 ensure handlers (search, dropdowns, clear) are wired
-      try { wireControlsOnce?.(); } catch {}
-
-      // status UI
-      try {
-        const ts = cached.savedAt ? new Date(cached.savedAt).toLocaleTimeString() : "";
-        updateDataStatus?.("fresh", ts ? `Loaded from cache • ${ts}` : "Loaded from cache");
-      } catch {}
-    }
-
-    // If cache was good enough, finish early *after* wiring
-    if (freshEnough) {
-      try { bumpLoadingTo?.(100, "Ready"); } catch {}
-      try { setTimeout(() => showLoadingBar?.(false), 200); } catch {}
-      return;
-    }
-
-    // 2) Otherwise, go fetch from network (your existing logic)
-    bumpLoadingTo?.(25, "Fetching header…");
-    const header = await getHeaderCached();            // your existing call
-    bumpLoadingTo?.(40, "Fetching rows…");
-
-    // paginated/windowed fetch loop (keep your original structure)
+    // Reset accumulators & paging flags
     window.ALL_ROWS = [];
-    let pageIdx = 0;
-    while (true) {
-      const windowRows = await fetchRowsWindow(pageIdx++);  // returns [] when done
-      if (!Array.isArray(windowRows) || windowRows.length === 0) break;
-      ALL_ROWS.push(...windowRows);
-      bumpLoadingTo?.(40 + Math.min(50, Math.floor((ALL_ROWS.length / Math.max(1, EXPECTED_ROW_COUNT || ALL_ROWS.length)) * 50)), `Fetched ${ALL_ROWS.length}…`);
+    try { window.FILTERED_ROWS = []; } catch {}
+    try { _noMorePages = false; _isLoadingPage = false; _pageCursor = 0; } catch {}
+
+    // Load ALL pages and set EXPECTED_ROW_COUNT internally
+    try { bumpLoadingTo?.(45, "Loading rows…"); } catch {}
+    await preloadAllPages(); // fills ALL_ROWS and sets expected via A:A - 1
+
+    // ===== Prepare filtered view =====
+    window.FILTERED_ROWS = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.slice() : [];
+
+    // ===== Paint using the virtual table (fast path) =====
+    if (document.getElementById("table-viewport")) {
+      if (!listSheetData.__vtInit && typeof initVirtualTable === "function") {
+        initVirtualTable(window.FILTERED_ROWS);       // first-time init
+        listSheetData.__vtInit = true;
+      } else if (typeof updateVirtualRows === "function") {
+        updateVirtualRows(window.FILTERED_ROWS);      // subsequent refreshes
+      }
+      // Ensure legacy table stays hidden
+      const tc = document.getElementById("table-container");
+      if (tc) tc.style.display = "none";
+    } else {
+      // ===== Fallback: legacy full render if viewport not present =====
+      if (typeof renderTableAll === "function") {
+        renderTableAll(window.FILTERED_ROWS);
+      }
     }
 
-    // compute filters and render
-    refreshCategoriesFromAllRows?.();
-    refreshVendorsFromAllRows();   // ← add this
+    // ===== Status / progress =====
+    try { updateProgressLabelFromCounts?.(window.ALL_ROWS.length); } catch {}
+    try { verifyRecordCount?.(); } catch {}
 
-    applyFilters?.({ render: true, sort: "stable" });
+    const exp = (typeof getExpectedRowCount === "function") ? getExpectedRowCount() : 0;
+    try {
+      updateDataStatus?.(
+        "fresh",
+        `Loaded ${window.ALL_ROWS.length}${exp ? ` / ${exp}` : ""} ✓`
+      );
+    } catch {}
 
-    // now that we have data, enable controls and wire them (idempotent)
-    window.FULLY_LOADED = true;
-    setControlsEnabledState?.();
-    wireControlsOnce?.();
-
-    // save new cache
-    try { saveProductCache7d?.({ rows: ALL_ROWS, savedAt: Date.now?.() }); } catch {}
-
-    bumpLoadingTo?.(100, "Ready");
-  } catch (err) {
-    console.error("[listSheetData] error:", err);
-    showToast?.("Error loading data (see console).");
+  } catch (e) {
+    console.error("[listSheetData] error:", e);
+    try { updateDataStatus?.("error", "Load failed"); } catch {}
+    try { showToast?.("Error loading sheet (see console)."); } catch {}
   } finally {
-    setTimeout(() => showLoadingBar?.(false), 250);
+    // ===== UI: finish loading =====
+    try { bumpLoadingTo?.(100, "Ready"); } catch {}
+    try { setTimeout(() => showLoadingBar?.(false), 350); } catch {}
+    try { setTimeout(() => __maybeHideOverlay?.(), 0); } catch {}
+    console.timeEnd("listSheetData");
   }
 }
+
 ;(function earlyHydrateIfCached(){
   const cached = loadProductCache7d?.();
   const hasRows = !!(cached && Array.isArray(cached.rows) && cached.rows.length);
@@ -2975,41 +3113,56 @@ function transformWindowRows(header, dataRows) {
   const catFn = (typeof categorizeDescription === 'function') ? categorizeDescription : (()=>'');
 
   const rows = [];
+  let skippedNoSku = 0, skippedAllBlank = 0;
+
   for (const row of (dataRows||[])) {
-    const vendor  = colMap.vendor        != null ? row[colMap.vendor]        : '';
-    const sku     = colMap.sku           != null ? row[colMap.sku]           : '';
-    const uom     = colMap.uom           != null ? row[colMap.uom]           : '';
-    const desc    = colMap.description   != null ? row[colMap.description]   : '';
-    const helper  = colMap.skuhelper     != null ? row[colMap.skuhelper]     : '';
-    const multVal = colMap.uommultiple   != null ? row[colMap.uommultiple]   : null;
-    const costVal = colMap.cost          != null ? row[colMap.cost]          : null;
-    const pxVal   = colMap.priceextended != null ? row[colMap.priceextended] : null;
+    const rawVendor  = colMap.vendor        != null ? row[colMap.vendor]        : '';
+    const rawSku     = colMap.sku           != null ? row[colMap.sku]           : '';
+    const rawUom     = colMap.uom           != null ? row[colMap.uom]           : '';
+    const rawDesc    = colMap.description   != null ? row[colMap.description]   : '';
+    const rawHelper  = colMap.skuhelper     != null ? row[colMap.skuhelper]     : '';
+    const rawMult    = colMap.uommultiple   != null ? row[colMap.uommultiple]   : null;
+    const rawCost    = colMap.cost          != null ? row[colMap.cost]          : null;
+    const rawPx      = colMap.priceextended != null ? row[colMap.priceextended] : null;
 
-    let mult = multVal===''?null:pn(multVal);
-    let cost = costVal===''?null:pn(costVal);
-    let px   = pxVal===''?null:pn(pxVal);
+    const allBlank = [rawVendor,rawSku,rawUom,rawDesc,rawHelper,rawMult,rawCost,rawPx]
+      .every(v => v == null || String(v).trim() === '');
+    if (allBlank) { skippedAllBlank++; continue; }
 
-    const cleanSku = nm(sku);
-    if (!cleanSku) continue;
+    const cleanSku = nm(rawSku);
+    if (!cleanSku) { skippedNoSku++; continue; }
 
+    let mult = rawMult===''?null:pn(rawMult);
+    let cost = rawCost===''?null:pn(rawCost);
+    let px   = rawPx  ===''?null:pn(rawPx);
     if (px == null) px = (mult == null ? 1 : mult) * (cost == null ? 0 : cost);
-    const description = nm(desc);
+
+    const description = nm(rawDesc);
 
     rows.push({
-      vendor: nm(vendor) || 'N/A',
+      vendor: nm(rawVendor) || 'N/A',
       sku: cleanSku,
-      uom: nm(uom),
+      uom: nm(rawUom),
       description,
-      skuHelper: nm(helper) || makeHelper(sku, vendor),
+      skuHelper: nm(rawHelper) || makeHelper(rawSku, rawVendor),
       uomMultiple: mult,
       cost: cost,
       priceExtended: px,
       category: catFn(description),
     });
   }
+
   dbg('[transformWindowRows] produced rows:', rows.length);
+  console.log('[transformWindowRows:summary]', {
+    input: (dataRows||[]).length,
+    produced: rows.length,
+    skippedNoSku,
+    skippedAllBlank
+  });
+
   return rows;
 }
+
 
 
 
@@ -3174,40 +3327,72 @@ async function fetchSheetHeader(spreadsheetId, apiKey, sheetName, startCol="A", 
   return await p;
 }
 
-
 function __renderFromCacheNow(reason = "pageshow"){
-  if (!Array.isArray(window.ALL_ROWS) || window.ALL_ROWS.length === 0) return false;
+  try {
+    // 1) Have cached rows?
+    if (!Array.isArray(window.ALL_ROWS) || window.ALL_ROWS.length === 0) return false;
 
-  // unhide container if HTML started hidden
-  const tc = document.getElementById("table-container");
-  if (tc) tc.style.display = "";
+    // 2) Reset paging flags so a later network refresh can still run
+    try { window._pageCursor = 0; } catch {}
+    try { window._noMorePages = false; } catch {}
+    try { window.__ROWS_DONE = false; } catch {}
 
-  // reset any paging/virtualization cursors your renderer might rely on
-  try { window._pageCursor = 0; } catch {}
-  try { window._noMorePages = false; } catch {}
-  try { window.__ROWS_DONE = false; } catch {}
+    // 3) Rebuild derived UI from ALL_ROWS (categories/vendors)
+    try { refreshCategoriesFromAllRows?.(); } catch {}
+    try { refreshVendorsFromAllRows?.(); } catch {}
 
-  // rebuild filters (category/vendor lists) from ALL_ROWS if needed
-  try { refreshCategoriesFromAllRows?.(); } catch {}
+    // 4) Default view = everything; filters will narrow later
+    window.FILTERED_ROWS = window.ALL_ROWS.slice();
+    window.USER_INTERACTED = true;
 
-  // default: show everything; filters will narrow later when user types/selects
-  window.FILTERED_ROWS = window.ALL_ROWS.slice();
-  window.USER_INTERACTED = true;
+    // 5) Prefer the virtual viewport if present
+    const hasVirtual = !!document.getElementById("table-viewport");
+    if (hasVirtual && typeof initVirtualTable === "function") {
+      // initial paint (or update if already initialized)
+      if (!__renderFromCacheNow.__vtInit) {
+        initVirtualTable(window.FILTERED_ROWS);
+        __renderFromCacheNow.__vtInit = true;
+      } else if (typeof updateVirtualRows === "function") {
+        updateVirtualRows(window.FILTERED_ROWS);
+      }
+      // keep legacy table hidden when using virtualization
+      const tc = document.getElementById("table-container");
+      if (tc) tc.style.display = "none";
+    } else {
+      // Fallback: legacy full render (slower for 10k+ rows)
+      const tc = document.getElementById("table-container");
+      if (tc) tc.style.display = "";
+      if (typeof renderTableAll === "function") {
+        renderTableAll(window.FILTERED_ROWS);
+      } else if (typeof renderTable === "function") {
+        renderTable(window.FILTERED_ROWS);
+      }
+    }
 
-  // Always render ALL rows on this path to avoid "appending 10"
-renderTable(window.FILTERED_ROWS);
-bindTableHandlersOnce?.();
+    // 6) Status + badge
+    try {
+      const exp = (typeof getExpectedRowCount === "function") ? getExpectedRowCount() : 0;
+      updateDataStatus?.("fresh", `Loaded ${window.ALL_ROWS.length}${exp ? ` / ${exp}` : ""} (cache)…`);
+      const badge = document.getElementById("fetch-count");
+      if (badge) {
+        badge.textContent = exp ? `${window.ALL_ROWS.length} / ${exp}` : String(window.ALL_ROWS.length);
+        badge.classList.add("ok"); badge.classList.remove("warn");
+      }
+    } catch {}
 
-  // Optional: update status and badge
-  updateDataStatus?.("fresh", `Loaded from cache • ${reason}`);
-  const badge = document.getElementById("fetch-count");
-  if (badge) {
-    const n = window.FILTERED_ROWS.length;
-    badge.textContent = `${n} / ${n}`;
-    badge.classList.add("ok"); badge.classList.remove("warn");
+    // 7) Breadcrumbs
+    console.log("[cache] __renderFromCacheNow:", {
+      reason, rows: window.ALL_ROWS.length, virtual: hasVirtual
+    });
+
+    return true;
+  } catch (e) {
+    console.warn("[cache] __renderFromCacheNow failed:", e);
+    return false;
   }
-  return true;
 }
+
+
 
 // ==== Show from cache when navigating back (BFCache or normal back) ====
 window.addEventListener("pageshow", (ev) => {
