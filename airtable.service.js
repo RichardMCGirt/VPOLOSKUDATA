@@ -1,9 +1,10 @@
+
 (function (global) {
   "use strict";
 
   // === HARD-CODE YOUR CONFIG HERE ===
   const AIRTABLE_CONFIG = Object.freeze({
-    API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054", // <- REPLACE with your real Airtable PAT
+    API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
     BASE_ID: "appeNSp44fJ8QYeY5",
     TABLE_ID: "tblRp5bukUiw9tX9j",
     VIEW_ID: "viwh9UWnGFNAoQwcT",
@@ -20,11 +21,21 @@
         VIEW_ID:  "viwXQMXGlrIfJZnTT",
         LABEL_CANDIDATES: ["Vanir Office","Branch","Name","Division","Office"]
       },
-      // Customers (populate "Customer" dropdown from Client Name)
       CUSTOMER: {
         TABLE_ID: "tblkXhrCv8229ctCh",
         VIEW_ID:  "Grid view",
         LABEL_CANDIDATES: ["Client Name","Client","Name"]
+      },
+      // Optional curated lists if your target fields are NOT select fields:
+      NEEDED_BY: {
+        TABLE_ID: "tblNeedBy123456789",      // <== create if you need a curated list
+        VIEW_ID:  "Grid view",
+        LABEL_CANDIDATES: ["Name","Needed By","Label","Title"]
+      },
+      REASON: {
+        TABLE_ID: "tblReasonABCDEF123",      // <== create if you need a curated list
+        VIEW_ID:  "Grid view",
+        LABEL_CANDIDATES: ["Name","Reason","Label","Title"]
       }
     }
   });
@@ -118,6 +129,39 @@
     otherTableUrl(tableId, id) {
       const base = `https://api.airtable.com/v0/${this.baseId}/${tableId}`;
       return id ? `${base}/${id}` : base;
+    }
+
+    // === Metadata (Option A)
+    async fetchTablesSchema(signal){
+      if (this._schemaCache) return this._schemaCache;
+      const url = `https://api.airtable.com/v0/meta/bases/${this.baseId}/tables`;
+      const res = await this._fetch(url, { headers: this.headers(), signal }, "meta-tables");
+      if (!res.ok) throw new Error(`Metadata tables failed: ${res.status} ${await res.text()}`);
+      const j = await res.json();
+      this._schemaCache = j?.tables || [];
+      return this._schemaCache;
+    }
+
+    /**
+     * Return allowed options for a specific field (Single select / Multi select).
+     * Output: { type, options: ["Option A","Option B",...], raw }
+     */
+    async fetchSelectOptionsFromSchema({ tableId, fieldName, signal }){
+      const tables = await this.fetchTablesSchema(signal);
+      const table = tables.find(t => t.id === tableId || t.name === tableId);
+      if (!table) throw new Error(`Table not found in schema: ${tableId}`);
+
+      const field = (table.fields || []).find(f => f.name === fieldName || f.id === fieldName);
+      if (!field) throw new Error(`Field not found in schema: ${fieldName} (table ${tableId})`);
+
+      const choices = field?.options?.choices || [];
+      const labels = choices
+        .map(c => (c?.name ?? "").trim())
+        .filter(Boolean)
+        .sort((a,b)=>a.localeCompare(b, undefined, {numeric:true, sensitivity:"base"}));
+
+      AIRTABLE_LOGGER.info("meta", `${fieldName} type=${field.type} choices=${labels.length}`);
+      return { type: field.type, options: labels, raw: field };
     }
 
     // ---- internal fetch w/ logging ----
@@ -230,12 +274,10 @@
       const src = this.sources.FIELD_MANAGER || {};
       return this.fetchOptionsFromSource({ tableId: src.TABLE_ID, viewId: src.VIEW_ID, labelCandidates: src.LABEL_CANDIDATES || [] });
     }
-
     async fetchBranchOptions() {
       const src = this.sources.BRANCH || {};
       return this.fetchOptionsFromSource({ tableId: src.TABLE_ID, viewId: src.VIEW_ID, labelCandidates: src.LABEL_CANDIDATES || [] });
     }
-
     async fetchCustomerOptions() {
       const src = this.sources.CUSTOMER || {};
       return this.fetchOptionsFromSource({ tableId: src.TABLE_ID, viewId: src.VIEW_ID, labelCandidates: src.LABEL_CANDIDATES || [] });
@@ -250,7 +292,6 @@
       const j = await res.json(); return j?.records?.[0] || null;
       async function safeText(resp){ try { return await resp.text(); } catch { return ""; } }
     }
-
     async patchRecord(id, fields) {
       const res = await this._fetch(this.tableUrl(id), {
         method: "PATCH", headers: this.headers(), body: JSON.stringify({ fields }),
@@ -259,7 +300,6 @@
       return await res.json();
       async function safeText(resp){ try { return await resp.text(); } catch { return ""; } }
     }
-
     async readRecord(id) {
       const res = await this._fetch(this.tableUrl(id), { headers: this.headers() }, "read");
       if (!res.ok) throw new Error((await safeText(res)) || `Read failed: ${res.status}`);
@@ -280,8 +320,126 @@
     static getLogLevel() { return AIRTABLE_LOGGER.getLevel(); }
   }
 
+  // ====== Helpers (GLOBAL so both bootstrap + fallback can use them) ======
+  function populateSelect(sel, labels){
+    if (!sel) return;
+    sel.innerHTML = "";
+    for (const lbl of labels){
+      const opt = document.createElement("option");
+      opt.value = lbl;
+      opt.textContent = lbl;
+      sel.appendChild(opt);
+    }
+  }
+  global.populateSelect = populateSelect; // expose for any external callers
+
+  // ====== Bootstrap after DOM is ready ======
+  document.addEventListener("DOMContentLoaded", async () => {
+    AIRTABLE_LOGGER.setLevel("debug"); // verbose while debugging
+
+    const at = new AirtableService();
+    const MAIN_TABLE_ID = "tblRp5bukUiw9tX9j";
+
+    // 1) Try Metadata API (Option A)
+    async function trySchemaFill(fieldName, sel) {
+      try {
+        const { type, options } = await at.fetchSelectOptionsFromSchema({ tableId: MAIN_TABLE_ID, fieldName });
+        AIRTABLE_LOGGER.info("schema", `${fieldName}: type=${type} options=${options.length}`);
+        if (options.length) {
+          populateSelect(sel, options);
+          return true;
+        }
+      } catch (e) {
+        AIRTABLE_LOGGER.warn("schema", `Failed for ${fieldName}`, e);
+      }
+      return false;
+    }
+
+    // 2) Fallbacks
+    async function tryCuratedSource(sourceKey, sel) {
+      try {
+        const srcMap = {
+          NEEDED_BY: () => at.fetchOptionsFromSource({
+            tableId: AIRTABLE_CONFIG.SOURCES.NEEDED_BY.TABLE_ID,
+            viewId:  AIRTABLE_CONFIG.SOURCES.NEEDED_BY.VIEW_ID,
+            labelCandidates: AIRTABLE_CONFIG.SOURCES.NEEDED_BY.LABEL_CANDIDATES
+          }),
+          REASON: () => at.fetchOptionsFromSource({
+            tableId: AIRTABLE_CONFIG.SOURCES.REASON.TABLE_ID,
+            viewId:  AIRTABLE_CONFIG.SOURCES.REASON.VIEW_ID,
+            labelCandidates: AIRTABLE_CONFIG.SOURCES.REASON.LABEL_CANDIDATES
+          })
+        };
+        if (!AIRTABLE_CONFIG.SOURCES[sourceKey]) return false;
+        const { options } = await srcMap[sourceKey]();
+        const labels = options.map(o => o.label);
+        if (labels.length) {
+          populateSelect(sel, labels);
+          AIRTABLE_LOGGER.info("fallback", `Filled from source ${sourceKey} (${labels.length})`);
+          return true;
+        }
+      } catch (e) {
+        AIRTABLE_LOGGER.warn("fallback", `Source ${sourceKey} failed`, e);
+      }
+      return false;
+    }
+
+    async function tryLegacyScrape(fieldName, sel) {
+      try {
+        const dd = await at.fetchDropdowns({ neededByField: "Needed By", reasonField: "Reason For Fill In" });
+        const map = {
+          "Needed By": dd.neededBy || [],
+          "Reason For Fill In": dd.reason || []
+        };
+        const arr = map[fieldName] || [];
+        if (arr.length) {
+          populateSelect(sel, arr);
+          AIRTABLE_LOGGER.info("legacy", `Filled ${fieldName} from current view values (${arr.length})`);
+          return true;
+        }
+      } catch (e) {
+        AIRTABLE_LOGGER.warn("legacy", `Scrape failed for ${fieldName}`, e);
+      }
+      return false;
+    }
+
+    // Wire explicit IDs if present
+    const neededBySel = document.getElementById("neededBySelect");
+    const reasonSel   = document.getElementById("reasonSelect");
+
+    if (neededBySel) {
+      let ok = await trySchemaFill("Needed By", neededBySel);
+      if (!ok) ok = await tryCuratedSource("NEEDED_BY", neededBySel);
+      if (!ok) ok = await tryLegacyScrape("Needed By", neededBySel);
+      if (!ok) AIRTABLE_LOGGER.warn("ui", "Needed By: no options found (check field TYPE or name spelling).");
+    }
+
+    if (reasonSel) {
+      let ok = await trySchemaFill("Reason For Fill In", reasonSel);
+      if (!ok) ok = await tryCuratedSource("REASON", reasonSel);
+      if (!ok) ok = await tryLegacyScrape("Reason For Fill In", reasonSel);
+      if (!ok) AIRTABLE_LOGGER.warn("ui", "Reason For Fill In: no options found (check field TYPE or name spelling).");
+    }
+
+    // Auto-wire any <select data-airtable-field="...">
+    const autoSelects = Array.from(document.querySelectorAll('select[data-airtable-field]'));
+    for (const sel of autoSelects) {
+      const fieldName = sel.getAttribute('data-airtable-field');
+      let ok = await trySchemaFill(fieldName, sel);
+      if (!ok) {
+        // try to guess curated fallback
+        if (/needed\s*by/i.test(fieldName)) ok = await tryCuratedSource("NEEDED_BY", sel);
+        if (!ok && /reason/i.test(fieldName)) ok = await tryCuratedSource("REASON", sel);
+      }
+      if (!ok) ok = await tryLegacyScrape(fieldName, sel);
+      if (!ok) AIRTABLE_LOGGER.warn("ui", `${fieldName}: no options found.`);
+    }
+  });
+
+  // Expose to window
   global.AirtableService = AirtableService;
   global.AIRTABLE_CONFIG = AIRTABLE_CONFIG;
   global.AIRTABLE_LOGGER = AIRTABLE_LOGGER;
 
 })(window);
+

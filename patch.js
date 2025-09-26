@@ -101,7 +101,6 @@
       if (v) vendorSet.add(v);
     }
 
-      // --- MATERIALS detail list (no labor) ---
     lines.push("MATERIALS");
     lines.push("---------");
     if (items.length) {
@@ -132,7 +131,6 @@
       lines.push("");
     }
 
-    // --- Totals (optional; products only, from UI if present) ---
     const productTotal = document.getElementById("productTotal")?.textContent?.trim();
     if (productTotal) {
       lines.push("TOTAL Cost");
@@ -143,24 +141,21 @@
     return lines.join("\n");
   }
 
-  // Initialize dropdowns from Airtable sources
   (async function initDropdowns(){
     try {
       const svc = new AirtableService();
 
-      // Customer options (tblkXhrCv8229ctCh.Client Name)
       const { options: customerOpts } = await svc.fetchCustomerOptions();
       const customerSel = document.getElementById("customerSelect");
       if (customerSel) {
         for (const opt of customerOpts) {
           const o = document.createElement("option");
-          o.value = opt.id;          // record id available as value
-          o.textContent = opt.label; // label shown
+          o.value = opt.id;          
+          o.textContent = opt.label; 
           customerSel.appendChild(o);
         }
       }
 
-      // Branch
       const { options: branchOpts } = await svc.fetchBranchOptions();
       const branchSel = document.getElementById("branchSelect");
       if (branchSel) {
@@ -171,7 +166,6 @@
         }
       }
 
-      // Field Manager
       const { options: fmOpts } = await svc.fetchFieldManagerOptions();
       const fmSel = document.getElementById("fieldManagerSelect");
       if (fmSel) {
@@ -188,7 +182,6 @@
     }
   })();
 
-  // --- Save to Airtable (robust linked/plain handling) ---
   (function wireSave(){
     const btn = document.getElementById("saveAirtable");
     const status = document.getElementById("airtableStatus");

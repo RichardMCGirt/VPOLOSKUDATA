@@ -32,7 +32,6 @@
       </div>
     </header>
 
-    <!-- Fill-In Request Details -->
     <section id="fillin-section" class="card" aria-labelledby="fillinTitle">
       <div id="airtableBanner">
         <strong>Missing Airtable API Key.</strong> In your browser console run:
@@ -43,7 +42,6 @@
       </header>
 
       <div class="grid" role="group" aria-label="Fill-In Request Fields">
-        <!-- Customer dropdown populated from tblkXhrCv8229ctCh.Client Name -->
         <div class="field">
           <label class="field-label" for="customerSelect">Customer</label>
           <select id="customerSelect"><option value="">—</option></select>
@@ -114,7 +112,7 @@
             <th></th>
           </tr>
         </thead>
-        <tbody><!-- rows injected by cart.js --></tbody>
+        <tbody></tbody>
       </table>
 
       <!-- Labor -->
@@ -127,7 +125,6 @@
 
       <div class="sep"></div>
 
-      <!-- Global margin control (applies to all material lines) -->
       <div id="globalMarginWrap">
         <div class="field">
           <label class="field-label" for="globalMarginPct">Material Margin (%)</label>
@@ -141,20 +138,14 @@
         <div class="label grand">Grand Total:</div><div class="value grand" id="grandTotal">$0.00</div>
       </div>
 
-      <div class="sticky-actions">
-        <button class="btn primary full-width-mobile" id="checkoutBtn">Export</button>
-      </div>
+    
     </section>
   </main>
 
   <div id="toast" role="status" aria-live="polite" aria-atomic="true" style="display:none;">Done</div>
 
-  <!-- Load Airtable service first so cart.js can use it if needed -->
   <script src="airtable.service.js"></script>
 
-
-
-  <!-- Your existing cart code last -->
   <script src="cart.js"></script>
     <script src="patch.js"></script>
 
