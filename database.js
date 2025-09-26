@@ -25,7 +25,9 @@ let _controlsWired = false;
 // add these two so early code can read them safely
 var USER_INTERACTED = false;
 var NO_LOGIN_MODE = true;  // keep your “no login” mode default
-
+let _isLoadingPage = false;
+let _noMorePages   = false;
+let _pageCursor    = 0;
 // Google auth/globals
 var gisInited = false;
 var gapiInited = false;
@@ -93,6 +95,8 @@ const freshEnough = !!(cached && isFresh(cached.savedAt));
   if (cached) {
     // Hydrate memory instantly for snappy UI
     ALL_ROWS = Array.isArray(cached.rows) ? cached.rows.slice() : [];
+    logFetchCount("listSheetData:cache-hydrate", ALL_ROWS, { cached: true });
+
     setExpectedRowCount && setExpectedRowCount(ALL_ROWS.length);
     // Mark as fully loaded for UI gates that require it
     try { FULLY_LOADED = true; setControlsEnabledState?.(); } catch {}
@@ -124,6 +128,7 @@ const freshEnough = !!(cached && isFresh(cached.savedAt));
 
     const headNow = fingerprintRows(ALL_ROWS);
     const headOld = cached?.fp || "none";
+logFetchCount("listSheetData:full-fetch-complete", ALL_ROWS, { cached: false });
 
     if (headNow === headOld && cached) {
  
@@ -289,59 +294,108 @@ function updateProgressLabelFromCounts(actual){
     bumpLoadingTo(base, `Loading ${actual}…`);
   }
 }
+
+
+
 async function loadNextPage(){
   if (_isLoadingPage || _noMorePages) return;
   _isLoadingPage = true;
 
   try {
-    // wrap the fetch in the tracker so __INFLIGHT is accurate
-    const windowRows = await trackAsync(fetchRowsWindow(_pageCursor, VIRTUAL_PAGE_SIZE));
+    const { header, dataRows, title } =
+      await trackAsync(fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor, VIRTUAL_PAGE_SIZE));
 
-    // If your transform is async, also track it. If sync, call directly.
-    const transformed = transformWindowRows(windowRows);  // or await trackAsync(transformWindowRows(...))
+    logFetchCount?.("loadNextPage:window", dataRows, {
+      page: _pageCursor,
+      size: VIRTUAL_PAGE_SIZE,
+      title
+    });
+
+    const transformed = transformWindowRows(header, dataRows);
 
     const startLen = ALL_ROWS.length;
     if (transformed && transformed.length){
-      for (let i = 0; i < transformed.length; i++) transformed[i]._seq = startLen + i;
+      for (let i = 0; i < transformed.length; i++) {
+        transformed[i]._seq = startLen + i;
+      }
       ALL_ROWS.push(...transformed);
     }
 
-    // If we got fewer than requested, we just hit the last page.
-    // That means we can compute the total (if we didn’t know it).
-    if (windowRows.length < VIRTUAL_PAGE_SIZE){
-      const discoveredTotal = ALL_ROWS.length; // current actual is final
-      if (!getExpectedRowCount()){
-        setExpectedRowCount(discoveredTotal);
-      }
-      _noMorePages = true;
-      __ROWS_DONE  = true;          // <---- paging is finished
+    logFetchCount?.("loadNextPage:accumulated", ALL_ROWS, {
+      page: _pageCursor,
+      appended: transformed?.length || 0
+    });
+
+    // Render
+    if (typeof renderTableAppendChunked === "function") {
+      await renderTableAppendChunked(transformed || []);
+    } else if (typeof renderTableAppend === "function") {
+      renderTableAppend(transformed || []);
     }
 
-    // If we explicitly got 0 rows, we’re definitely done.
-    if (windowRows.length === 0){
-      if (!getExpectedRowCount()){
-        setExpectedRowCount(ALL_ROWS.length);
-      }
+    // Determine end: if fewer than requested came back, we’re done
+    const got = Array.isArray(dataRows) ? dataRows.length : 0;
+    if (got < VIRTUAL_PAGE_SIZE || transformed?.length === 0) {
       _noMorePages = true;
-      __ROWS_DONE  = true;          // <---- paging is finished
+      __ROWS_DONE = true;
+      FULLY_LOADED = true;
+      updateDataStatus?.("fresh", `Loaded ${ALL_ROWS.length}${getExpectedRowCount() ? ` / ${getExpectedRowCount()}` : ""} ✓`);
+    } else {
+      _pageCursor++;
+      updateDataStatus?.("loading", `Loaded ${ALL_ROWS.length}…`);
     }
 
-    // Update visible progress every page
-    updateProgressLabelFromCounts(ALL_ROWS.length);
+    updateProgressLabelFromCounts?.(ALL_ROWS.length);
     verifyRecordCount?.();
-
-    // Advance the cursor if we’re not done
-    if (!_noMorePages) _pageCursor++;
 
   } catch (e){
     console.error("[loadNextPage] error", e);
     throw e;
   } finally {
     _isLoadingPage = false;
-    // Re-evaluate whether we can hide (only hides when done+quiet+no inflight)
     setTimeout(__maybeHideOverlay, 0);
   }
 }
+
+async function preloadAllPages(){
+  __ROWS_DONE = false;
+  _noMorePages = false;
+  _pageCursor = 0;
+
+  // Resolve title once and set EXPECTED for UI
+  const title = await resolveSheetTitle(SHEET_ID, DEFAULT_GID);
+  const used = await getSheetUsedRowCount(SHEET_ID, title);
+  // used includes header. Subtract 1 to get the data row count; add back when comparing to ALL_ROWS
+  const expectedData = Math.max(0, used - 1);
+  setExpectedRowCount(expectedData);
+
+  console.time("sheet:full-load");
+  while (!_noMorePages) {
+    await loadNextPage();
+  }
+  console.timeEnd("sheet:full-load");
+}
+
+
+// ---- Fetch progress logger ----
+function logFetchCount(where, rowsLike, extra = {}) {
+  // rowsLike can be an array (rows) or a gapi response-ish object with .result.values
+  const got = Array.isArray(rowsLike)
+    ? rowsLike.length
+    : (rowsLike?.result?.values?.length ?? 0);
+
+  const total = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.length : 0;
+  const expected = Number(getExpectedRowCount?.() || window.EXPECTED_ROW_COUNT || 0);
+
+  console.log(`[sheet] ${where}`, {
+    got,                    // rows returned by this step
+    totalAccumulated: total,// ALL_ROWS after this step
+    expected,               // target if known
+    ...extra
+  });
+}
+
+
 
 (function(){
   const __origFetch = window.fetch.bind(window);
@@ -938,12 +992,9 @@ let _ingestSeq = 0; // monotonically increasing id assigned to each row as it ar
 
 
 // --- Virtualization / paging config (mobile-first) ---
-const VIRTUAL_PAGE_SIZE = 300;   
+const VIRTUAL_PAGE_SIZE = 1500;
 const VIRTUAL_PREFETCH = 1;      // prefetch next page proactively
-let _pageCursor = 0;             // 0-based page index
 let _pageTitle = null;           // resolved sheet title
-let _isLoadingPage = false;
-let _noMorePages = false;
 let __LOADING_HID_ONCE = false;   
 // ===== GOOGLE SHEETS + GIS SIGN-IN (popup token flow) =====
 
@@ -1192,6 +1243,15 @@ function gisLoaded() {
     maybeEnableButtons && maybeEnableButtons();
   }
 }
+async function getSheetUsedRowCount(spreadsheetId, title) {
+  const res = await sheetsValuesGet({
+    spreadsheetId,
+    range: `'${title}'!A:A`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const col = res?.result?.values || [];
+  return col.length; // header + data
+}
 
 function categorizeDescription(desc = "") {
   const d = String(desc || "");
@@ -1204,6 +1264,38 @@ function categorizeDescription(desc = "") {
   }
   return "Misc";
 }
+
+async function resolveSheetTitle(spreadsheetId, gidNumber) {
+  if (_pageTitle) return _pageTitle;
+  if (typeof getSheetTitleByGid === 'function') {
+    _pageTitle = await getSheetTitleByGid(spreadsheetId, gidNumber);
+  }
+  if (!_pageTitle) _pageTitle = (typeof PRODUCT_TAB_FALLBACK !== 'undefined' ? PRODUCT_TAB_FALLBACK : 'Sheet1');
+  return _pageTitle;
+}
+
+async function fetchRowsWindow(spreadsheetId, gidNumber, pageIdx, pageSize) {
+  dbg("[fetchRowsWindow] pageIdx:", pageIdx, "pageSize:", pageSize);
+  const title  = await resolveSheetTitle(spreadsheetId, gidNumber);
+  const header = await getHeaderCached(spreadsheetId, title);
+  dbg('[fetchRowsWindow] header length:', header.length);
+
+  // A:H — adjust end column if you have more columns
+  const startRow = (pageIdx * pageSize) + 2;          // +2 to skip header row
+  const endRow   = startRow + pageSize - 1;
+  const range    = `'${title}'!A${startRow}:H${endRow}`;
+
+  const res = await sheetsValuesGet({
+    spreadsheetId,
+    range,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const dataRows = res.result.values || [];
+  dbg('[fetchRowsWindow] fetched rows:', dataRows.length);
+
+  return { header, dataRows, title };
+}
+
 async function fetchJSON(url, init){
   return trackAsync(
     fetch(url, init).then(async (res) => {
@@ -1389,39 +1481,87 @@ async function getSheetTitleByGid(spreadsheetId, gidNumber) {
 }
 
 // Main: fetch + transform
+// Fetch products from a specific sheet tab (by gid if provided) and build row indexes.
+// Adds clear logs for raw grid values and final row objects.
 async function fetchProductSheet(spreadsheetId, gidNumber = null) {
+  // --- Resolve the tab title (gid → title) ---
   let title = null;
   if (gidNumber !== null && gidNumber !== undefined) {
-    title = await getSheetTitleByGid(spreadsheetId, gidNumber);
+    try {
+      title = await getSheetTitleByGid(spreadsheetId, gidNumber);
+    } catch (e) {
+      console.warn("[fetchProductSheet] getSheetTitleByGid failed, falling back:", e);
+    }
   }
   if (!title) title = PRODUCT_TAB_FALLBACK;
 
+  // --- Fetch grid values ---
   const res = await gapi.client.sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${title}'!${PRODUCT_RANGE}`,
   });
-  const values = res.result.values || [];
-  if (!values.length) return { rows: [], bySku: {}, bySkuVendor: {} };
+  const values = res.result?.values || [];
 
-  // Identify header row
-  for (let r = 0; r < Math.min(5, values.length); r++) {
-    const row = (values[r] || []).map(x => norm(x).toLowerCase());
-    if (row.some(c => c.includes("sku")) && row.some(c => c.includes("desc"))) {
-      headerRowIdx = r; break;
-    }
-  }
-  const headerRow = values[headerRowIdx] || [];
-  const dataRows  = values.slice(headerRowIdx + 1);
-
-  // Map columns
-  const colMap = {};
-  headerRow.forEach((h, idx) => {
-    const key = headerKey(h);
-    if (key && !(key in colMap)) colMap[key] = idx;
+  // LOG: raw grid rows returned
+  logFetchCount?.("fetchProductSheet:raw-values", { result: { values } }, {
+    title,
+    range: PRODUCT_RANGE
   });
 
+  if (!values.length) {
+    return { rows: [], bySku: Object.create(null), bySkuVendor: Object.create(null), title };
+  }
+
+  // --- Find header row (first ~5 rows) ---
+  const MAX_SCAN = Math.min(5, values.length);
+  let headerRowIdx = 0;
+  let header = values[0] || [];
+  for (let r = 0; r < MAX_SCAN; r++) {
+    const row = values[r] || [];
+    // Heuristic: a header row usually has at least 3-4 non-empty cells and includes
+    // some of the canonical column names.
+    const joined = row.map(c => String(c || "").toLowerCase());
+    const hits = ["vendor", "sku", "uom", "description"].filter(k =>
+      joined.some(x => x.includes(k))
+    ).length;
+    const nonEmpty = row.filter(c => c != null && String(c).trim() !== "").length;
+    if (hits >= 2 && nonEmpty >= 3) {
+      headerRowIdx = r;
+      header = row;
+      break;
+    }
+  }
+
+  // --- Build a column map by normalized header names ---
+  const norm = (s) => String(s ?? "").trim();
+  const toKey = (s) => norm(s).toLowerCase().replace(/\s+/g, " ").replace(/[^\w ]+/g, "").replace(/\s+/g, "_");
+
+  const h = header.map((name) => toKey(name));
+  const findCol = (...candidates) => {
+    for (const c of candidates) {
+      const idx = h.indexOf(c);
+      if (idx !== -1) return idx;
+    }
+    return null;
+  };
+
+  const colMap = {
+    vendor:        findCol("vendor","supplier","vendor_name"),
+    sku:           findCol("sku","item","item_sku","product_sku"),
+    uom:           findCol("uom","unit","unit_of_measure","units"),
+    description:   findCol("description","desc","product_description","name"),
+    skuHelper:     findCol("sku_helper","helper","alt_sku","sku_hint"),
+    uomMultiple:   findCol("uom_multiple","multiple","multiplier"),
+    cost:          findCol("cost","unit_cost","buy","buy_cost"),
+    priceExtended: findCol("price_extended","extended","extended_price","unit_price","sell","price"),
+    marginPct:     findCol("margin_pct","margin","markup_pct","markup"),
+  };
+
+  // --- Iterate all rows after header and build normalized rows ---
   const rows = [];
-  for (const row of dataRows) {
+  for (let r = headerRowIdx + 1; r < values.length; r++) {
+    const row = values[r] || [];
+
     const vendor  = colMap.vendor        != null ? row[colMap.vendor]        : "";
     const sku     = colMap.sku           != null ? row[colMap.sku]           : "";
     const uom     = colMap.uom           != null ? row[colMap.uom]           : "";
@@ -1434,6 +1574,7 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     const cleanSku = norm(sku);
     if (!cleanSku) continue;
 
+    // Compute priceExtended if missing: px = multiple * cost
     if (px == null) {
       const m = (mult == null ? 1 : mult);
       const c = (cost == null ? 0 : cost);
@@ -1446,24 +1587,33 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
       sku: cleanSku,
       uom: norm(uom),
       description,
-      skuHelper: norm(helper) || makeSkuHelper(sku, vendor),
+      skuHelper: norm(helper) || makeSkuHelper?.(sku, vendor) || "",
       uomMultiple: mult,
       cost: cost,
       priceExtended: px,
-      category: categorizeDescription(description),
+      category: categorizeDescription?.(description),
     });
   }
 
+  // --- Build indexes ---
   const bySku = Object.create(null);
   const bySkuVendor = Object.create(null);
   for (const r of rows) {
-const key = `${r.sku}|${r.vendor}|${r.uom || ''}`;
+    const key = `${r.sku}|${r.vendor}|${r.uom || ""}`;
     bySkuVendor[key] = r;
     if (!bySku[r.sku]) bySku[r.sku] = r;
   }
 
+  // LOG: final clean rows produced
+  logFetchCount?.("fetchProductSheet:rows-built", rows, {
+    title,
+    headerRowIdx,
+    productRange: PRODUCT_RANGE
+  });
+
   return { rows, bySku, bySkuVendor, title };
 }
+
 
 // ====================== Render: Product Table ============================
 function ensureTable() {
@@ -1667,10 +1817,9 @@ function applyFilters(opts = {}) {
   const qEl = document.getElementById("searchInput");
   const q = (qEl?.value || "").trim().toLowerCase();
   if (q) {
-    rows = rows.filter(r => {
-      // cheap stringify; swap to specific fields if you want faster searches
-      return JSON.stringify(r).toLowerCase().includes(q);
-    });
+   const qs = q.toLowerCase();
+   rows = rows.filter(r => rowIndex(r).hay.includes(qs));
+ 
   }
 
   // --- vendor filter ---
@@ -1844,6 +1993,61 @@ bindTableHandlersOnce?.();
   return window.FILTERED_ROWS;
 }
 
+// Replace your "renderTableAll" (or add this helper) — uses chunked DOM writes.
+function renderTableAll(rows) {
+  const table = ensureTable();
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+
+  if (thead) {
+    thead.innerHTML = `
+      <tr>
+        <th>Vendor</th>
+        <th>SKU</th>
+        <th>UOM</th>
+        <th>Description</th>
+        <th style="width:160px;">Qty</th>
+        <th style="width:120px;"></th>
+      </tr>`;
+  }
+  if (!tbody) return;
+
+  // Clear first, then append in chunks
+  tbody.innerHTML = "";
+
+  const N = rows.length;
+  const chunk = Math.max(100, Math.min(500, (typeof RENDER_CHUNK === "number" ? RENDER_CHUNK : 200)));
+  let i = 0;
+
+  const ric = window.requestIdleCallback || (fn => setTimeout(() => fn({ timeRemaining: () => 8 }), 0));
+
+  function pump(deadline){
+    // append while we have idle time (or at least one chunk)
+    while ((deadline.timeRemaining ? deadline.timeRemaining() > 4 : true) && i < N) {
+      const end = Math.min(i + chunk, N);
+      const frag = document.createDocumentFragment();
+      for (; i < end; i++) {
+        const r = rows[i];
+        const tr = document.createElement("tr");
+        tr.setAttribute("data-key", `${r.sku}|${r.vendor}|${r.uom || ""}`);
+        tr.innerHTML = `
+          <td data-label="Vendor">${escapeHtml(r.vendor)}</td>
+          <td data-label="SKU">${escapeHtml(r.sku)}</td>
+          <td data-label="UOM">${escapeHtml(r.uom)}</td>
+          <td data-label="Description">${escapeHtml(r.description)}</td>
+          <td data-label="Qty"><input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="0" id="qty_${i}"></td>
+          <td data-label="" class="row-actions">
+            <button class="btn add-to-cart" data-key="${escapeHtml(r.sku)}|${escapeHtml(r.vendor)}|${escapeHtml(r.uom || "")}" data-idx="${i}">Add</button>
+          </td>
+        `;
+        frag.appendChild(tr);
+      }
+      tbody.appendChild(frag);
+    }
+    if (i < N) ric(pump); // schedule next idle slice
+  }
+  ric(pump);
+}
 
 
 
@@ -2405,7 +2609,7 @@ async function preloadAllPages() {
   }
 }
 function renderTableAppendChunked(rows, startIdx = 0){
-  if (!hasAnyActiveFilter()) { return; }
+
   let i = startIdx;
   function work(deadline){
     // Append in RENDER_CHUNK slices while we still have idle time
@@ -2429,6 +2633,8 @@ async function listSheetData() {
     // 1) Try 7-day cache first
     const cached = (typeof loadProductCache7d === "function") ? loadProductCache7d() : null;
     const freshEnough = !!(cached && Array.isArray(cached.rows) && cached.rows.length);
+ALL_ROWS = [];
+await preloadAllPages();   // will load all 12,763+ rows across pages
 
     if (cached) {
       // hydrate from cache
@@ -2586,8 +2792,6 @@ function refreshVendorsFromAllRows() {
   }
 }
 
-
-
 // ====================== Controls Wiring ===================
 
 function wireControlsOnce() {
@@ -2604,16 +2808,16 @@ function wireControlsOnce() {
   try { refreshVendorsFromAllRows(); } catch {}
   try { typeof refreshCategoriesFromAllRows === "function" && refreshCategoriesFromAllRows(); } catch {}
 
-  if (search) search.addEventListener("input", (typeof debounce === "function"
-    ? debounce(() => {
-        window.USER_INTERACTED = true;
-        applyFilters({ render: true, sort: "stable" });
-      }, 120)
-    : () => {
-        window.USER_INTERACTED = true;
-        applyFilters({ render: true, sort: "stable" });
-      }
-  ));
+ if (search) search.addEventListener("input", (typeof debounce === "function"
+  ? debounce(() => {
+       window.USER_INTERACTED = true;
+       applyFilters({ render: true, sort: "stable" });
+     }, 120)
+   : () => {
+       window.USER_INTERACTED = true;
+       applyFilters({ render: true, sort: "stable" });
+     }
+ ));
 
   if (vendor) vendor.addEventListener("change", () => {
     window.USER_INTERACTED = true;
@@ -2755,32 +2959,31 @@ async function fetchRowsWindow(spreadsheetId, gidNumber, pageIdx, pageSize) {
 }
 
 function transformWindowRows(header, dataRows) {
-dbg("[transformWindowRows] header length:", (header||[]).length, "dataRows:", (dataRows||[]).length);
+  dbg("[transformWindowRows] header length:", (header||[]).length, "dataRows:", (dataRows||[]).length);
 
   const colMap = {};
   (header || []).forEach((h, idx) => {
-    if (typeof headerKey === 'function') {
-      const key = headerKey(h);
-      if (key && !(key in colMap)) colMap[key] = idx;
-    } else {
-      const key = (''+h).trim().toLowerCase().replace(/\s+/g, '');
-      if (key && !(key in colMap)) colMap[key] = idx;
-    }
+    const key = (typeof headerKey === 'function')
+      ? headerKey(h)
+      : (''+h).trim().toLowerCase().replace(/\s+/g,'').replace(/[^\w]/g,'');
+    if (key && !(key in colMap)) colMap[key] = idx;
   });
 
+  const pn = (typeof parseNumber === 'function') ? parseNumber : (v => (v==null||v==='')?null:Number(v));
+  const nm = (typeof norm === 'function') ? norm : (v => (v==null)?'':String(v).trim());
+  const makeHelper = (typeof makeSkuHelper === 'function') ? makeSkuHelper : ((s, v)=> s&&v ? (s+' • '+v) : (s||v||''));
+  const catFn = (typeof categorizeDescription === 'function') ? categorizeDescription : (()=>'');
+
   const rows = [];
-  for (const row of dataRows) {
+  for (const row of (dataRows||[])) {
     const vendor  = colMap.vendor        != null ? row[colMap.vendor]        : '';
     const sku     = colMap.sku           != null ? row[colMap.sku]           : '';
     const uom     = colMap.uom           != null ? row[colMap.uom]           : '';
     const desc    = colMap.description   != null ? row[colMap.description]   : '';
-    const helper  = colMap.skuHelper     != null ? row[colMap.skuHelper]     : '';
-    const multVal = colMap.uomMultiple   != null ? row[colMap.uomMultiple]   : null;
+    const helper  = colMap.skuhelper     != null ? row[colMap.skuhelper]     : '';
+    const multVal = colMap.uommultiple   != null ? row[colMap.uommultiple]   : null;
     const costVal = colMap.cost          != null ? row[colMap.cost]          : null;
-    const pxVal   = colMap.priceExtended != null ? row[colMap.priceExtended] : null;
-
-    const pn = (typeof parseNumber === 'function') ? parseNumber : (v => (v==null||v==='')?null:Number(v));
-    const nm = (typeof norm === 'function') ? norm : (v => (v==null)?'':String(v).trim());
+    const pxVal   = colMap.priceextended != null ? row[colMap.priceextended] : null;
 
     let mult = multVal===''?null:pn(multVal);
     let cost = costVal===''?null:pn(costVal);
@@ -2789,15 +2992,9 @@ dbg("[transformWindowRows] header length:", (header||[]).length, "dataRows:", (d
     const cleanSku = nm(sku);
     if (!cleanSku) continue;
 
-    if (px == null) {
-      const m = (mult == null ? 1 : mult);
-      const c = (cost == null ? 0 : cost);
-      px = m * c;
-    }
+    if (px == null) px = (mult == null ? 1 : mult) * (cost == null ? 0 : cost);
     const description = nm(desc);
-    const cat = (typeof categorizeDescription === 'function') ? categorizeDescription(description) : '';
 
-    const makeHelper = (typeof makeSkuHelper === 'function') ? makeSkuHelper : ((s, v) => s && v ? (s + ' • ' + v) : (s || v || ''));
     rows.push({
       vendor: nm(vendor) || 'N/A',
       sku: cleanSku,
@@ -2807,12 +3004,15 @@ dbg("[transformWindowRows] header length:", (header||[]).length, "dataRows:", (d
       uomMultiple: mult,
       cost: cost,
       priceExtended: px,
-      category: cat,
+      category: catFn(description),
     });
   }
   dbg('[transformWindowRows] produced rows:', rows.length);
   return rows;
 }
+
+
+
 
 function renderTableAppend(rows) {
 if (!hasAnyActiveFilter()) { return; }
@@ -2906,111 +3106,7 @@ function removeSkeletonRows(){
 }
 const hadActive = hasAnyActiveFilter();
 
-async function loadNextPage() {
 
-  dbg("[loadNextPage] page:", _pageCursor, "loading:", _isLoadingPage, "noMore:", _noMorePages);
-
-  if (_isLoadingPage || _noMorePages) return;
-  _isLoadingPage = true;
-  if (typeof showEl === 'function') showEl('loadingBarOverlay', true);
-
-  try {
-    // Prefer a prefetched page if available
-    let header, dataRows;
-    if (typeof _prefetched === 'object' && _prefetched && _prefetched[_pageCursor]) {
-      ({ header, dataRows } = _prefetched[_pageCursor]);
-      try { delete _prefetched[_pageCursor]; } catch(_) {}
-    } else {
-      const resp = await withRetry(
-        () => fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor, VIRTUAL_PAGE_SIZE),
-        3,
-        200
-      );
-      ({ header, dataRows } = resp || {});
-    }
-
-    const windowRows = transformWindowRows(header, dataRows);
-    dbg("[fetchRowsWindow] pageIdx:", _pageCursor, "pageSize:", VIRTUAL_PAGE_SIZE, "got:", windowRows.length);
-
-if (!Array.isArray(windowRows) || windowRows.length === 0) {
-  _noMorePages = true;           // internal flag (you already had this)
-  __ROWS_DONE  = true;           // ✅ now we *know* there are no more
-  verifyRecordCount();           // tick progress one last time (will hide if counts match)
-  return;
-}
-
-
-    // First page — initialize filters/UI and clear old rows
-    if (_pageCursor === 0) {
-      if (typeof buildCategories === 'function') buildCategories(windowRows);
-      if (typeof populateVendorFilter === 'function') populateVendorFilter(windowRows);
-      if (typeof populateCategoryFilter === 'function') populateCategoryFilter(windowRows);
-      if (typeof renderCategoryChips === 'function') renderCategoryChips();
-
-      const table = document.getElementById('data-table') || ensureTable();
-      const tbody = table.querySelector('tbody');
-      if (tbody) tbody.innerHTML = '';
-    }
-
-    // Append to master list
-    if (!Array.isArray(ALL_ROWS)) ALL_ROWS = [];
-    Array.prototype.push.apply(ALL_ROWS, windowRows);
-
-    // Keep cart prices in sync with latest rows (if cart exists)
-    if (typeof reconcileCartWithCatalog === 'function') {
-      try { reconcileCartWithCatalog(ALL_ROWS); } catch (e) { console.warn("[cart reconcile] err", e); }
-    }
-
-    // Prefetch next page opportunistically
-    if (typeof VIRTUAL_PREFETCH !== "undefined" && VIRTUAL_PREFETCH > 0) {
-      setTimeout(() => {
-        if (!_noMorePages && !_isLoadingPage) {
-          fetchRowsWindow(SHEET_ID, DEFAULT_GID, _pageCursor + 1, VIRTUAL_PAGE_SIZE)
-            .then(({ header, dataRows }) => {
-              if (typeof _prefetched !== 'object' || !_prefetched) _prefetched = {};
-              _prefetched[_pageCursor + 1] = { header, dataRows };
-            })
-            .catch(() => {});
-        }
-      }, 0);
-    }
-
-    // === Recompute + paint safely after adding windowRows ===
-    const hadActive = hasAnyActiveFilter();
-    const beforeLen = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
-
-    // Recompute ONLY (don’t let applyFilters paint)
-    try { applyFilters({ render: false, sort: "stable" }); }
-    catch (e) { console.error('[loadNextPage] applyFilters error', e); }
-
-    if (hadActive) {
-      // Full repaint so no stale rows can sneak in during search/filter
-      const table = document.getElementById('data-table') || ensureTable();
-      const tbody = table.querySelector('tbody');
-      if (tbody) tbody.innerHTML = '';
-      renderTableAppendChunked(FILTERED_ROWS, 0);
-    } else {
-      // No active filters: append only the new tail for smooth infinite scroll
-      const afterLen = Array.isArray(FILTERED_ROWS) ? FILTERED_ROWS.length : 0;
-      const delta = (afterLen > beforeLen && Array.isArray(FILTERED_ROWS))
-        ? FILTERED_ROWS.slice(beforeLen)
-        : [];
-      renderTableAppend(delta);  // note: this is a no-op if you gate on hasAnyActiveFilter()
-    }
-
-    _pageCursor++;
-    // ✅ keep progress up-to-date each page
-if (_noMorePages) {
-  __ROWS_DONE = true;
-}
-verifyRecordCount();
-
-
-  } finally {
-if (typeof showEl === 'function') showEl('loadingBarOverlay', false);
-    _isLoadingPage = false;
-  }
-}
 
 
 function setupInfiniteScroll() {
