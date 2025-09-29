@@ -298,21 +298,47 @@ const FEATURES = Object.freeze({
 
     /** Returns { options:[{id,label}], idToLabel:Map, labelToId:Map } */
     async fetchOptionsFromSource({ tableId, viewId, labelCandidates = [] } = {}) {
-      const recs = await this.fetchAllFromSource(tableId, viewId);
-      const options = [];
-      const idToLabel = new Map();
-      const labelToId = new Map();
-      for (const r of recs) {
-        const id = r.id;
-        const label = AirtableService._pickLabel(r.fields || {}, labelCandidates);
-        if (!id || !label) continue;
-        options.push({ id, label });
-        idToLabel.set(id, label);
-        if (!labelToId.has(label)) labelToId.set(label, id);
-      }
-      options.sort((a,b)=>a.label.localeCompare(b.label, undefined, {numeric:true, sensitivity:"base"}));
-      return { options, idToLabel, labelToId };
-    }
+     const recs = await this.fetchAllFromSource(tableId, viewId);
+
+  // 1) Build raw options
+  const rawOptions = [];
+  const idToLabel  = new Map();
+  const labelToId  = new Map();
+
+  const normalize = (s) => String(s || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  for (const r of recs) {
+    const id    = r.id;
+    const label = normalize(AirtableService._pickLabel(r.fields || {}, labelCandidates));
+    if (!id || !label) continue;
+
+    rawOptions.push({ id, label });
+    idToLabel.set(id, label);
+
+    // store the *first* id for each label; ignore subsequent duplicates
+    const key = label.toLocaleLowerCase();
+    if (!labelToId.has(key)) labelToId.set(key, id);
+  }
+
+  // 2) Sort by label (stable)
+  rawOptions.sort((a, b) =>
+    a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" })
+  );
+
+  // 3) Collapse duplicates by label (case-insensitive)
+  const seen = new Set();
+  const options = [];
+  for (const o of rawOptions) {
+    const key = o.label.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    options.push(o);
+  }
+
+  return { options, idToLabel, labelToId };
+}
 
     async fetchFieldManagerOptions() {
       const src = this.sources.FIELD_MANAGER || {};
