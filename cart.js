@@ -556,7 +556,7 @@ function renderSavedCart(stateMaybe) {
         <td data-label="Description">${(saved?.row?.description ?? "")}</td>
         <td data-label="Qty">
           <div class="stack">
-            <label class="field-label">QTY</label>
+            <label class="field-label"></label>
             <input type="number" class="cart-qty" min="0" step="1"
                    value="${qty}" data-key="${(saved.key || "")}">
           </div>
@@ -808,3 +808,4 @@ async function bootAirtable(){
 }
 
 })();
+

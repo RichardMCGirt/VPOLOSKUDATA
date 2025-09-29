@@ -3,7 +3,9 @@ const CLIENT_ID = "518347118969-drq9o3vr7auf78l16qcteor9ng4nv7qd.apps.googleuser
 const API_KEY   = "AIzaSyBGYsHkTEvE9eSYo9mFCUIecMcQtT8f0hg";
 const SHEET_ID  = "1E3sRhqKfzxwuN6VOmjI2vjWsk_1QALEKkX7mNXzlVH8";
 const SCOPES    = "https://www.googleapis.com/auth/spreadsheets.readonly";
-const RL_MAX_PER_MIN = 30;       
+const RL_MAX_PER_MIN = 30;  
+const CACHE_FIRST_MODE = true;
+const CACHE_STALE_HINT_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const RL_INTERVAL_MS = 60_000;  
 let __rl_timestamps = [];     
 var ALL_ROWS = [];
@@ -87,59 +89,107 @@ function $(id){ return document.getElementById(id); }
 
 function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
 
-async function listSheetData() {
-const cached = loadProductCache7d(); 
-const freshEnough = !!(cached && isFresh(cached.savedAt));
-  const now = Date.now();
-  if (cached) {
-    ALL_ROWS = Array.isArray(cached.rows) ? cached.rows.slice() : [];
-    logFetchCount("listSheetData:cache-hydrate", ALL_ROWS, { cached: true });
-    setExpectedRowCount && setExpectedRowCount(ALL_ROWS.length);
-    try { FULLY_LOADED = true; setControlsEnabledState?.(); } catch {}
-    try { refreshCategoriesFromAllRows?.(); applyFilters?.({ render: true, sort: "stable" }); } catch {}
-    updateDataStatus(freshEnough ? "fresh" : "stale",
-      freshEnough ? ("Up to date • " + new Date(cached.savedAt).toLocaleTimeString())
-                  : "Showing cached data… revalidating");
+
+async function __fetchAllRowsFromNetwork() {
+  // Reset paging/global state before a real fetch
+  try { showLoadingBar?.(true, "Loading…"); } catch {}
+  bumpLoadingTo?.(5, "Starting…");
+
+  ALL_ROWS = [];
+  FILTERED_ROWS = [];
+  if (typeof _pageCursor !== "undefined") _pageCursor = 0;
+  if (typeof _noMorePages !== "undefined") _noMorePages = false;
+  if (typeof __ROWS_DONE !== "undefined") __ROWS_DONE = false;
+  FULLY_LOADED = false;
+
+  updateDataStatus?.("loading", "Fetching latest data…");
+
+  // Prefer a single “fetch everything” if you have it:
+  if (typeof preloadAllPages === "function") {
+    await preloadAllPages(); // should populate ALL_ROWS
+  } else if (typeof loadNextPage === "function") {
+    // Fallback: drain pages
+    let guard = 0;
+    while (!_noMorePages && guard++ < 10000) { // guard against infinite loops
+      await loadNextPage();
+    }
+  } else {
+    throw new Error("No fetch method available: define preloadAllPages() or loadNextPage().");
   }
-  if (freshEnough) {
-    try { bumpLoadingTo?.(100, "Ready"); } catch {}
-    return;
+
+  if (!Array.isArray(ALL_ROWS)) {
+    throw new Error("Fetch completed but ALL_ROWS is not an array.");
   }
+}
+
+/* =========================
+   3) CACHE-FIRST listSheetData
+   ========================= */
+async function listSheetData(opts = {}) {
+  const forceNetwork = !!opts.forceNetwork;
+
   try {
-    ALL_ROWS = []; FILTERED_ROWS = []; _pageCursor = 0; _noMorePages = false;
-    __ROWS_DONE = false;
-    updateDataStatus("loading", cached ? "Revalidating…" : "Loading…");
-    showLoadingBar?.(true, cached ? "Checking for updates…" : "Initializing…");
-    bumpLoadingTo?.(25, "Fetching product data…");
-    await loadNextPage();
+    // 1) Cache first
+    const cached = loadProductCache7d();
+    const hasCachedRows = !!(cached && Array.isArray(cached.rows) && cached.rows.length);
+    const isStaleForHint = !!(cached && (Date.now() - cached.savedAt) > CACHE_STALE_HINT_MS);
 
-    const headNow = fingerprintRows(ALL_ROWS);
-    const headOld = cached?.fp || "none";
-    logFetchCount("listSheetData:full-fetch-complete", ALL_ROWS, { cached: false });
-    if (headNow === headOld && cached) {
+    if (hasCachedRows) {
+      // Hydrate from cache
       ALL_ROWS = cached.rows.slice();
+      logFetchCount?.("listSheetData:cache-hydrate", ALL_ROWS, { cached: true });
       setExpectedRowCount?.(ALL_ROWS.length);
-      __ROWS_DONE = true; FULLY_LOADED = true;
+      FULLY_LOADED = true;
       setControlsEnabledState?.();
-      applyFilters?.({ render: true, sort: "stable" });
-      bumpLoadingTo?.(100, "No changes");
-      showLoadingBar?.(false);
-      updateDataStatus("fresh", "Up to date • " + new Date().toLocaleTimeString());
-      return;
+      try {
+        refreshCategoriesFromAllRows?.();
+        applyFilters?.({ render: true, sort: "stable" });
+      } catch {}
+
+      const ts = new Date(cached.savedAt).toLocaleTimeString();
+      if (isStaleForHint) {
+        updateDataStatus?.("warn", `Showing cached data • Last updated ${ts} • Click Refresh to update`);
+      } else {
+        updateDataStatus?.("fresh", `Up to date • ${ts}`);
+      }
+
+      // If cache-first and not explicitly forced, stop here (no network).
+      if (CACHE_FIRST_MODE && !forceNetwork) {
+        bumpLoadingTo?.(100, "Ready");
+        return;
+      }
+      // Otherwise, fall through and revalidate from network.
+    } else {
+      // No cache
+      updateDataStatus?.("idle", "No cached data • Click Refresh to load");
+      // In cache-first mode, do nothing until user explicitly refreshes.
+      if (CACHE_FIRST_MODE && !forceNetwork) {
+        bumpLoadingTo?.(100, "Ready");
+        return;
+      }
+      // Otherwise, we’re allowed to fetch now.
     }
 
-    if (typeof preloadAllPages === "function") {
-      await preloadAllPages(); 
-    }
-    _saveProductCacheDebounced();
-    saveProductCache(ALL_ROWS);
-    try { refreshCategoriesFromAllRows?.(); applyFilters?.({ render: true, sort: "stable" }); } catch {}
+    // 2) Network path (only if forced or cache-first disabled)
+    await __fetchAllRowsFromNetwork();
+
+    // 3) Persist & render fresh data
+    try { saveProductCache(ALL_ROWS); } catch {}
+    setExpectedRowCount?.(ALL_ROWS.length);
+    setControlsEnabledState?.();
+    try {
+      refreshCategoriesFromAllRows?.();
+      applyFilters?.({ render: true, sort: "stable" });
+    } catch {}
+
+    updateDataStatus?.("fresh", `Up to date • ${new Date().toLocaleTimeString()}`);
   } catch (e) {
-    console.error("[listSheetData] revalidate failed", e);
-    updateDataStatus("error", "Load failed");
+    console.error("[listSheetData] failed", e);
+    updateDataStatus?.("error", "Load failed");
   } finally {
     bumpLoadingTo?.(100, "Ready");
     setTimeout(() => { try { __maybeHideOverlay?.(); } catch {} }, 0);
+    try { showLoadingBar?.(false); } catch {}
   }
 }
 window.addEventListener("storage", (e) => {
@@ -346,15 +396,40 @@ function logFetchCount(where, rowsLike, extra = {}) {
   const total = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.length : 0;
   const expected = Number(getExpectedRowCount?.() || window.EXPECTED_ROW_COUNT || 0);
 
-  console.log(`[sheet] ${where}`, {
-    got,                  
-    totalAccumulated: total,
-    expected,             
-    ...extra
-  });
+ 
 }
 
+async function __fetchAllRowsFromNetwork() {
+  // Reset paging/global state before a real fetch
+  try { showLoadingBar?.(true, "Loading…"); } catch {}
+  bumpLoadingTo?.(5, "Starting…");
 
+  ALL_ROWS = [];
+  FILTERED_ROWS = [];
+  if (typeof _pageCursor !== "undefined") _pageCursor = 0;
+  if (typeof _noMorePages !== "undefined") _noMorePages = false;
+  if (typeof __ROWS_DONE !== "undefined") __ROWS_DONE = false;
+  FULLY_LOADED = false;
+
+  updateDataStatus?.("loading", "Fetching latest data…");
+
+  // Prefer a single “fetch everything” if you have it:
+  if (typeof preloadAllPages === "function") {
+    await preloadAllPages(); // should populate ALL_ROWS
+  } else if (typeof loadNextPage === "function") {
+    // Fallback: drain pages
+    let guard = 0;
+    while (!_noMorePages && guard++ < 10000) { // guard against infinite loops
+      await loadNextPage();
+    }
+  } else {
+    throw new Error("No fetch method available: define preloadAllPages() or loadNextPage().");
+  }
+
+  if (!Array.isArray(ALL_ROWS)) {
+    throw new Error("Fetch completed but ALL_ROWS is not an array.");
+  }
+}
 
 (function(){
   const __origFetch = window.fetch.bind(window);
@@ -379,19 +454,21 @@ function logFetchCount(where, rowsLike, extra = {}) {
 })();
 
 document.getElementById("refreshData")?.addEventListener("click", async () => {
-  clearProductCache();                       
+  clearProductCache();                        // ensure we *must* hit network
   updateDataStatus?.("loading", "Refreshing…");
   ALL_ROWS = []; FILTERED_ROWS = [];
   _pageCursor = 0; _noMorePages = false; __ROWS_DONE = false; FULLY_LOADED = false;
   showLoadingBar?.(true, "Refreshing…");
-  await listSheetData();                     
+  await listSheetData({ forceNetwork: true }); // ⬅️ force network
   bumpLoadingTo?.(100, "Ready");
   showLoadingBar?.(false);
-if (Array.isArray(ALL_ROWS) && ALL_ROWS.length > 0) {
+
+  if (Array.isArray(ALL_ROWS) && ALL_ROWS.length > 0) {
     saveProductCache(ALL_ROWS);
   }
   updateDataStatus?.("fresh", "Up to date • " + new Date().toLocaleTimeString());
 });
+
 
 function setExpectedRowCount(n){
   try {
@@ -561,41 +638,40 @@ function __virtRowHTML(r, idx, topPx) {
 }
 function addToCartFromRow(row, key, qty) {
   try {
-    if (!window.CART || !(window.CART instanceof Map)) window.CART = new Map();
-
-    const k = key || `${row.sku}|${row.vendor}|${row.uom||""}`;
-    const existing = window.CART.get(k);
+    const k = key || `${row.sku}|${row.vendor}|${row.uom || ""}`;
+    const existing = CART.get(k);
 
     const unitBaseVal = unitBase(row);
+    const addQty = Math.max(1, Math.floor(Number(qty) || 1));
+
     const item = existing || {
       key: k,
-      sku: row.sku,
-      vendor: row.vendor,
-      uom: row.uom || "",
-      desc: row.description || "",
+      row: row,
       qty: 0,
       unitBase: unitBaseVal,
-      row
+      marginPct: DEFAULT_PRODUCT_MARGIN_PCT,
     };
 
-    item.qty = Math.max(0, Number(item.qty||0)) + Math.max(1, Number(qty||1));
-    item.unitBase = unitBaseVal; // keep fresh in case pricing updated
+    item.qty = Math.max(1, (Number(item.qty) || 0) + addQty);
+    item.unitBase = unitBaseVal;   // keep fresh
+    item.row = row;                // ensure full row is present
 
-    window.CART.set(k, item);
+    CART.set(k, item);
 
-    if (typeof renderCart === "function") renderCart();
-    if (typeof persistState === "function") persistState();
-    if (typeof showToast === "function") showToast(`Added ${item.qty} × ${item.sku} (${item.vendor})`);
-    const badge = document.getElementById("cartCountBadge");
-    if (badge) {
-      let total = 0; for (const v of window.CART.values()) total += Number(v.qty||0);
-      badge.textContent = String(total);
-    }
+    if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
+
+    renderCart();
+    persistState();         // save first
+    broadcastCartState();   // then broadcast so cart.html updates instantly
+    showToast?.(`Added ${addQty} × ${row.sku} (${row.vendor})`);
+    showEl?.("cart-section", true);
+    updateCartBadge?.();
   } catch (e) {
     console.error("[addToCartFromRow] failed", e);
     try { showToast?.("Could not add item (see console)."); } catch {}
   }
 }
+
 
 function wireVirtualRowClicks() {
   const vp = document.getElementById("table-viewport");
@@ -787,8 +863,6 @@ const expected = Number(getExpectedRowCount()) || 0;
       bumpLoadingTo(100, "All records loaded");
       try { FULLY_LOADED = true; setControlsEnabledState?.(); } catch {}
     }
-
-    console.log("[verifyRecordCount]", { expected, actual, ok });
 
     if (typeof updateDataStatus === "function"){
       const msg = expected ? `Loaded ${actual}${ok ? " ✓" : ` / ${expected}`}` : `Loaded ${actual}`;
@@ -1070,8 +1144,8 @@ const DEFAULT_PRODUCT_MARGIN_PCT = 30;
 const MARGIN = 0.30;
 const MARKUP_MULT = 1 + MARGIN;
 let headerRowIdx = 0;
-const CART = new Map();
-let LABOR_LINES = [];
+const CART = (window.CART instanceof Map) ? window.CART : (window.CART = new Map());
+let LABOR_LINES = Array.isArray(window.LABOR_LINES) ? window.LABOR_LINES : (window.LABOR_LINES = []);
 const CART_URL = "cart.html";
 const CART_WINDOW_NAME = "vanir_cart_tab";
 
@@ -1412,7 +1486,7 @@ async function gapiLoaded() {
         }
       }
       bumpLoadingTo?.(25, "Fetching product data…");
-      await listSheetData(); 
+await listSheetData({ forceNetwork: false });
       bumpLoadingTo?.(85, "Finalizing table…");
       applyFilters?.({ render: true, sort: "stable" });
       setControlsEnabledState?.();
@@ -2269,37 +2343,38 @@ function renderTableAll(rows) {
 
 function addToCart(row, qty) {
   if (!(qty > 0)) return;
-  const key = `${row.sku}|${row.vendor}|${row.uom || ''}`;
+
+  const key = `${row.sku}|${row.vendor}|${row.uom || ""}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
 
   if (existing) existing.qty += qty;
   else CART.set(key, { row, qty, unitBase: ub, marginPct: DEFAULT_PRODUCT_MARGIN_PCT });
 
-  if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0); // ensures one labor row
+  if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
 
   renderCart();
-  persistState();            // save first
-  broadcastCartState();      // then broadcast
-  showToast(`Added ${qty} ${row?.sku || "item"} to cart`);
-  showEl("cart-section", true);
-  updateCartBadge();
+  persistState();          // save first
+  broadcastCartState();    // then broadcast
+  showToast?.(`Added ${qty} ${row?.sku || "item"} to cart`);
+  showEl?.("cart-section", true);
+  updateCartBadge?.();
 }
+
 
 
 function addLaborLine(rate = 0, qty = 0, name = "Labor line", marginPct = 0) {
   const safeQty  = Math.max(0, Math.floor(qty || 0));
   const safeRate = Number(rate) || 0;
   const safePct  = Math.max(0, Number(marginPct) || 0);
-
   LABOR_LINES.push({ id: _laborIdSeq++, rate: safeRate, qty: safeQty, name, marginPct: safePct });
-
-  showEl("cart-section", true);
+  showEl?.("cart-section", true);
   renderCart();
   persistState();
-  broadcastCartState();
-  updateCartBadge();
+  broadcastCartState();    // <—
+  updateCartBadge?.();
 }
+
 
 function updateCartQty(key, qty) {
   const item = CART.get(key);
@@ -3194,13 +3269,7 @@ function transformWindowRows(header, dataRows) {
   }
 
   dbg('[transformWindowRows] produced rows:', rows.length);
-  console.log('[transformWindowRows:summary]', {
-    input: (dataRows||[]).length,
-    produced: rows.length,
-    skippedNoSku,
-    skippedAllBlank
-  });
-
+  
   return rows;
 }
 
@@ -3258,16 +3327,17 @@ function bindTableHandlersOnce(){
   const tbody = document.querySelector("#data-table tbody");
   if (!tbody || tbody._bound) return;
 
-  tbody.addEventListener("click", (ev) => {
-    const btn = ev.target.closest(".add-to-cart");
-    if (!btn) return;
-    const idx = Number(btn.getAttribute("data-idx") || "0");
-    const qtyInput = document.getElementById(`qty_${idx}`);
-    let qty = Number(qtyInput?.value || 1);
-    if (!Number.isFinite(qty) || qty <= 0) qty = 1;
-    const row = FILTERED_ROWS[idx]; 
-    if (row) addToCart(row, qty);
-  }, { passive: true });
+ tbody.addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".add-to-cart");
+  if (!btn) return;
+  const idx = Number(btn.getAttribute("data-idx") || "0");
+  const qtyInput = btn.closest(".vactions")?.querySelector(".qty-input");
+  let qty = Number(qtyInput?.value || 1);
+  if (!Number.isFinite(qty) || qty <= 0) qty = 1;
+  const row = FILTERED_ROWS[idx];
+  if (row) addToCart(row, qty);
+}, { passive: true });
+
 
   tbody._bound = true;
 }
