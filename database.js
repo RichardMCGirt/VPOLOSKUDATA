@@ -628,7 +628,7 @@ function __virtRowHTML(r, idx, topPx) {
       <div>${escapeHtml(formatMoney(unitBase(r)))}</div>
       <!-- actions (new) -->
       <div class="vactions" style="display:flex;align-items:center;gap:8px;">
-        <input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="1"
+        <input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="0"
                data-idx="${idx}" style="width:70px;padding:4px 6px;">
         <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
       </div>
@@ -1632,7 +1632,7 @@ function showDescSheetForRow(row){
 
   // reset & focus qty
   const qty = document.getElementById("ds-qty");
-  qty.value = "1";
+  qty.value = "0";
   setTimeout(() => { try { qty.focus(); qty.select(); } catch {} }, 0);
 }
 

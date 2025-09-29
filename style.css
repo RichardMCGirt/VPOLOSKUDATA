@@ -1118,14 +1118,32 @@ tbody tr:last-child td { border-bottom: none; }
   backdrop-filter: blur(2px);
 }
 
-#desc-sheet .ds-panel{
-  position: fixed; left: 0; right: 0; bottom: 0;
-  max-width: 720px; margin: 0 auto;
-  background: #fff;
-  border-top-left-radius: 14px; border-top-right-radius: 14px;
-  box-shadow: 0 -8px 30px rgba(0,0,0,.25);
-  padding: 12px 14px 12px;
+/* Backdrop covers the screen */
+#desc-sheet .ds-backdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.35);
 }
+
+/* Centered modal */
+#desc-sheet .ds-panel{
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+
+  width: min(720px, calc(100vw - 24px));
+  max-height: min(80vh, 720px);
+
+  background: #fff;
+  border-radius: 14px;        /* full radius for a modal box */
+  box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  padding: 12px 14px 12px;
+
+  overflow: auto;             /* scroll inside if needed */
+  will-change: transform;
+}
+
 
 #desc-sheet .ds-header{
   display:flex; align-items:center; justify-content:space-between;
@@ -1183,3 +1201,38 @@ tbody tr:last-child td { border-bottom: none; }
   gap: 6px;
   min-width: 160px;    /* prevents overlapping */
 }
+/* Make the sheet a top-level stacking context */
+#desc-sheet{
+  position: fixed;
+  inset: 0;              /* top/right/bottom/left: 0 */
+  z-index: 9000;         /* higher than .vhead's z-index */
+}
+
+/* Dim + block clicks behind the modal */
+#desc-sheet .ds-backdrop{
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  backdrop-filter: blur(2px);
+}
+
+/* Centered panel (use this or your bottom-sheet version) */
+#desc-sheet .ds-panel{
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+
+  width: min(720px, calc(100vw - 24px));
+  max-height: min(80vh, 720px);
+  overflow: auto;
+
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  padding: 12px 14px 12px;
+  z-index: 9001;        /* above backdrop */
+}
+
+/* Optional: prevent body scroll when modal is open */
+body.no-scroll { overflow: hidden; }
