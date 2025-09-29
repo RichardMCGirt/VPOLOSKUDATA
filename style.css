@@ -1237,3 +1237,31 @@ tbody tr:last-child td { border-bottom: none; }
 
 /* Optional: prevent body scroll when modal is open */
 body.no-scroll { overflow: hidden; }
+@media (max-width: 430px){
+  /* Only allow taps on the SKU cell and the actions block */
+  #table-viewport .vrow > :not(.cell-sku):not(.vactions){
+    pointer-events: none;
+  }
+  /* Keep qty/add fully interactive */
+  #table-viewport .vactions,
+  #table-viewport .vactions *{
+    pointer-events: auto;
+  }
+
+  /* Ensure the SKU cell isn’t overlaying other cells */
+  #table-viewport .vrow > .cell-sku{
+    position: static;   /* was sticky in some layouts */
+    left: auto;
+    z-index: auto;
+    box-shadow: none;   /* just in case */
+    background: transparent;
+  }
+}
+/* Entire row is clickable; actions stay normal */
+#table-viewport .vrow {
+  cursor: pointer;
+}
+#table-viewport .vrow .vactions,
+#table-viewport .vrow .vactions * {
+  cursor: default;
+}

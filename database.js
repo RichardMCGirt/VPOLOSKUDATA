@@ -618,23 +618,26 @@ function __virtMeasureRowHeight() {
 function __virtRowHTML(r, idx, topPx) {
   const key = `${String(r.sku||"")}|${String(r.vendor||"")}|${String(r.uom||"")}`;
   return `
-    <div class="vrow" style="top:${topPx}px" data-key="${escapeHtml(key)}" data-idx="${idx}">
-      <div>${escapeHtml(r.vendor||"")}</div>
-      <div>${escapeHtml(r.sku||"")}</div>
-      <div>${escapeHtml(r.uom||"")}</div>
-      <div>${escapeHtml(r.description||"")}</div>
-      <div>${escapeHtml(r.skuHelper||"")}</div>
-      <div>${escapeHtml(formatMoney(r.cost))}</div>
-      <div>${escapeHtml(formatMoney(unitBase(r)))}</div>
-      <!-- actions (new) -->
-      <div class="vactions" style="display:flex;align-items:center;gap:8px;">
-        <input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="0"
+    <div class="vrow js-open-desc" role="button" tabindex="0"
+         style="top:${topPx}px"
+         data-key="${escapeHtml(key)}"
+         data-idx="${idx}">
+      <div class="cell-vendor">${escapeHtml(r.vendor||"")}</div>
+      <div class="cell-sku">${escapeHtml(r.sku||"")}</div>
+      <div class="cell-uom">${escapeHtml(r.uom||"")}</div>
+      <div class="cell-desc">${escapeHtml(r.description||"")}</div>
+      <div class="cell-helper">${escapeHtml(r.skuHelper||"")}</div>
+      <div class="cell-cost">${escapeHtml(formatMoney(r.cost))}</div>
+      <div class="cell-price">${escapeHtml(formatMoney(unitBase(r)))}</div>
+      <div class="vactions">
+        <input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="1"
                data-idx="${idx}" style="width:70px;padding:4px 6px;">
         <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
       </div>
     </div>
   `;
 }
+
 function addToCartFromRow(row, key, qty) {
   try {
     const k = key || `${row.sku}|${row.vendor}|${row.uom || ""}`;
@@ -699,6 +702,42 @@ function wireVirtualRowClicks() {
     addToCartFromRow(row, key, qty);
   }, { passive: true });
 }
+function wireRowOpenHandler(){
+  const vp = document.getElementById("table-viewport");
+  if (!vp || vp.__wiredRowOpen) return;
+  vp.__wiredRowOpen = true;
+
+  function tryOpenFrom(el){
+    // Don’t steal clicks from Qty/Add
+    if (el.closest(".vactions")) return;
+    const rowEl = el.closest(".vrow");
+    if (!rowEl) return;
+    const idx = Number(rowEl.getAttribute("data-idx"));
+    const row = Array.isArray(window.FILTERED_ROWS) ? window.FILTERED_ROWS[idx] : null;
+    if (row) showDescSheetForRow(row);
+  }
+
+  // Mouse/tap click
+  vp.addEventListener("click", (e) => { tryOpenFrom(e.target); }, { passive:true });
+
+  // Keyboard (Enter/Space) for accessibility
+  vp.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const rowEl = e.target.closest(".vrow");
+    if (!rowEl) return;
+    e.preventDefault();
+    tryOpenFrom(rowEl);
+  }, { passive:false });
+}
+
+// call this after you render the virtual table
+(function hookRowOpenAfterRender(){
+  const orig = window.renderVirtualTableInit;
+  window.renderVirtualTableInit = function(){
+    if (typeof orig === "function") orig.apply(this, arguments);
+    try { wireRowOpenHandler(); } catch {}
+  };
+})();
 
 function renderVirtualTableSlice() {
   const els = __virtEnsureEls();
@@ -1690,6 +1729,16 @@ function hideDescSheet(){
     } catch {}
   }
 }
+// Keeps your existing handler intact; just bails early if tap is in actions
+const vp = document.getElementById("table-viewport");
+vp.addEventListener("click", (e) => {
+  if (e.target.closest(".vactions")) return; // don't open the sheet
+  const el = e.target.closest(".cell-sku");
+  if (!el) return;
+  const idx = Number(el.getAttribute("data-idx"));
+  const row = (window.FILTERED_ROWS && window.FILTERED_ROWS[idx]) || null;
+  if (row) showDescSheetForRow(row);
+});
 
 
 function __parseQty(val){
