@@ -480,3 +480,35 @@ tbody tr:last-child td { border-bottom: none; }
 }
 #data-table td.row-actions{ vertical-align: middle; text-align:center; }
 #data-table td.row-actions .row-actions__inner{ display:inline-flex; align-items:center; gap:8px; }
+/* Makes virtualization smooth */
+#table-viewport {
+  position: relative;
+  height: 70vh;           /* or whatever you like */
+  overflow: auto;
+  border: 1px solid #ddd;
+}
+
+#table-viewport .vhead {
+  position: sticky;
+  top: 0;
+  display: grid;
+  grid-template-columns: 160px 160px 90px 1fr 140px 100px 120px 140px;
+  gap: 6px;
+  background: #f7f7f7;
+  padding: 8px;
+  font-weight: 600;
+  z-index: 1;
+}
+
+.vrow {
+  position: absolute;     /* we position rows within the spacer area */
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: 160px 160px 90px 1fr 140px 100px 120px 140px;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+  will-change: transform;
+}

@@ -38,6 +38,7 @@ const QUIET_WINDOW_MS = 800;
 const PRODUCT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; 
 const PRODUCT_CACHE_KEY = "vanir_products_cache_v2"; 
 const PRODUCT_CACHE_SS_KEY = "vanir_products_cache_v2_ss";
+let __filterTimer = null;
 
 function isFresh(savedAt){
   try { return (Date.now() - Number(savedAt || 0)) < PRODUCT_CACHE_TTL_MS; }
@@ -153,8 +154,9 @@ function saveProductCache(rows){
   const payload = { rows: Array.isArray(rows)? rows : [], savedAt: Date.now() };
   const json = JSON.stringify(payload);
   try { sessionStorage.setItem(PRODUCT_CACHE_SS_KEY, json); } catch {}
-  try { localStorage.setItem(PRODUCT_CACHE_KEY, json); } catch {}
+  // Removed localStorage write to avoid double-caching (big memory hit)
 }
+
 
 function clearProductCache() {
   try { sessionStorage.removeItem(PRODUCT_CACHE_SS_KEY); } catch {}
@@ -484,6 +486,120 @@ window.showLoadingBar = function(show, label=""){
 })();
 
 function __noteActivity(){ __LAST_ACTIVITY_TS = Date.now(); }
+
+// ===== Virtualized table renderer =====
+let VIRT_ROW_HEIGHT = 40;
+const VIRT_OVERSCAN = 10;
+let __virtEls = null;
+let __virtBound = false;
+
+function __virtEnsureEls() {
+  if (__virtEls) return __virtEls;
+  const vp = document.getElementById("table-viewport");
+  const spacer = document.getElementById("table-spacer");
+  if (!vp || !spacer) return null;
+
+  // Hidden measurer to learn height once
+  const measureRow = document.createElement("div");
+  measureRow.className = "vrow";
+  measureRow.style.visibility = "hidden";
+  measureRow.style.position = "absolute";
+  measureRow.style.top = "0px";
+  measureRow.innerHTML = `
+    <div>Vendor</div><div>SKU</div><div>UOM</div><div>Description</div>
+    <div>Helper</div><div>Multiple</div><div>Cost</div><div>Price Ext</div>
+  `;
+  spacer.appendChild(measureRow);
+
+  __virtEls = { vp, spacer, measureRow };
+  return __virtEls;
+}
+
+function __virtMeasureRowHeight() {
+  const els = __virtEnsureEls();
+  if (!els) return;
+  const h = els.measureRow.getBoundingClientRect().height | 0;
+  if (h > 0) VIRT_ROW_HEIGHT = h;
+}
+
+function __virtRowHTML(r, idx, topPx) {
+  const key = `${String(r.sku||"")}|${String(r.vendor||"")}|${String(r.uom||"")}`;
+  return `
+    <div class="vrow" style="top:${topPx}px" data-key="${escapeHtml(key)}" data-idx="${idx}">
+      <div>${escapeHtml(r.vendor||"")}</div>
+      <div>${escapeHtml(r.sku||"")}</div>
+      <div>${escapeHtml(r.uom||"")}</div>
+      <div>${escapeHtml(r.description||"")}</div>
+      <div>${escapeHtml(r.skuHelper||"")}</div>
+      <div>${escapeHtml(r.uomMultiple==null? "" : String(r.uomMultiple))}</div>
+      <div>${escapeHtml(formatMoney(r.cost))}</div>
+      <div>${escapeHtml(formatMoney(unitBase(r)))}</div>
+    </div>
+  `;
+}
+
+function renderVirtualTableSlice() {
+  const els = __virtEnsureEls();
+  if (!els) return;
+  const rows = Array.isArray(window.FILTERED_ROWS) ? window.FILTERED_ROWS : [];
+  const total = rows.length;
+
+  const scrollTop = els.vp.scrollTop;
+  const viewportH = els.vp.clientHeight || 600;
+
+  const firstRow = Math.max(0, Math.floor(scrollTop / VIRT_ROW_HEIGHT) - VIRT_OVERSCAN);
+  const lastRow  = Math.min(total - 1, Math.ceil((scrollTop + viewportH) / VIRT_ROW_HEIGHT) + VIRT_OVERSCAN);
+
+  let html = "";
+  for (let i = firstRow; i <= lastRow; i++) {
+    const top = i * VIRT_ROW_HEIGHT;
+    html += __virtRowHTML(rows[i], i, top);
+  }
+  els.spacer.innerHTML = html;
+}
+
+function renderVirtualTableInit() {
+  const els = __virtEnsureEls();
+  if (!els) return;
+
+  __virtMeasureRowHeight();
+
+  const total = Array.isArray(window.FILTERED_ROWS) ? window.FILTERED_ROWS.length : 0;
+  els.spacer.style.height = (total * VIRT_ROW_HEIGHT) + "px";
+
+  if (!__virtBound) {
+    __virtBound = true;
+    els.vp.addEventListener("scroll", () => {
+      window.requestAnimationFrame(renderVirtualTableSlice);
+    }, { passive: true });
+    window.addEventListener("resize", () => {
+      __virtMeasureRowHeight();
+      renderVirtualTableInit();
+      renderVirtualTableSlice();
+    });
+  }
+  renderVirtualTableSlice();
+}
+
+function renderTableAllVirtual(rows) {
+  // Hide legacy table path (we only use the virtual viewport)
+  try {
+    const tc = document.getElementById("table-container");
+    if (tc) tc.style.display = "none";
+  } catch {}
+  const vp = document.getElementById("table-viewport");
+  if (vp) vp.style.display = "";
+
+  window.FILTERED_ROWS = Array.isArray(rows) ? rows : [];
+  renderVirtualTableInit();
+}
+
+// Compatibility shim if something calls this
+function initVirtualTable() {
+  renderVirtualTableInit();
+}
+
+
 
 function __maybeHideOverlay(reason = ""){
   const now = Date.now();
@@ -842,8 +958,10 @@ async function getHeaderCached(spreadsheetId, title){
   return await p;
 }
 
-const DEBUG_LOGS = true; 
+// Before: const DEBUG_LOGS = true;
+const DEBUG_LOGS = false;
 function dbg(...args){ try { if (DEBUG_LOGS) console.log(...args); } catch(_){} }
+
 
 function dgw(label, obj){ try { if (DEBUG_LOGS) console.groupCollapsed(label); console.log(obj); console.groupEnd(); } catch(_){} }
 
@@ -1565,188 +1683,100 @@ function refreshCategoriesFromAllRows() {
   renderCategoryChips();
 }
 
-function applyFilters(opts = {}) {
 
-  const render = opts.render !== false; 
-  const sortMode = opts.sort || "stable";
+  // Debounced filters that drive the virtual table (single, global version)
 
-  const ONLY_AFTER_INTERACTION = (typeof RENDER_ONLY_AFTER_INTERACTION !== "undefined")
-    ? !!RENDER_ONLY_AFTER_INTERACTION : false;
-  const ONLY_AFTER_FULL_FETCH  = (typeof RENDER_ONLY_AFTER_FULL_FETCH  !== "undefined")
-    ? !!RENDER_ONLY_AFTER_FULL_FETCH  : false;
+function applyFilters({ render = true, sort = "stable" } = {}) {
+  if (__filterTimer) clearTimeout(__filterTimer);
+  __filterTimer = setTimeout(() => __applyFiltersNow({ render, sort }), 180);
+}
 
-   if (ONLY_AFTER_FULL_FETCH && !window.FULLY_LOADED) {
+function __applyFiltersNow({ render = true, sort = "stable" } = {}) {
+  const ONLY_AFTER_INTERACTION =
+    (typeof RENDER_ONLY_AFTER_INTERACTION !== "undefined") ? !!RENDER_ONLY_AFTER_INTERACTION : false;
+  const ONLY_AFTER_FULL_FETCH  =
+    (typeof RENDER_ONLY_AFTER_FULL_FETCH  !== "undefined") ? !!RENDER_ONLY_AFTER_FULL_FETCH  : false;
+
+  if (ONLY_AFTER_FULL_FETCH && !window.FULLY_LOADED) {
     if (render) { try { showEl?.("table-container", false); } catch {} }
+    window.FILTERED_ROWS = [];
     return [];
   }
   if (ONLY_AFTER_INTERACTION && !window.USER_INTERACTED) {
     if (render) { try { showEl?.("table-container", false); } catch {} }
+    window.FILTERED_ROWS = [];
     return [];
   }
-  
-  function applyFilters({ render = true, sort = "stable" } = {}) {
-
-  let rows = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.slice() : [];
-
-  const qEl = document.getElementById("searchInput");
-  const q = (qEl?.value || "").trim().toLowerCase();
-  if (q) {
-   const qs = q.toLowerCase();
-   rows = rows.filter(r => rowIndex(r).hay.includes(qs));
- 
-  }
-
-  const vSel = document.getElementById("vendorFilter");
-  const v = (vSel?.value || "").trim();
-  if (v) {
-    rows = rows.filter(r => getVendorName(r) === v);
-  }
-
-  const catSel = document.getElementById("categoryFilter");
-  const activeCat = (window.ACTIVE_CATEGORY && window.ACTIVE_CATEGORY.length)
-    ? window.ACTIVE_CATEGORY
-    : (catSel?.value || "");
-  if (activeCat) {
-    const getCat = (r) => String(r.Category ?? r.category ?? "").trim();
-    rows = rows.filter(r => getCat(r) === activeCat);
-  }
-
-  const sortSelect = document.getElementById("sortBy");
-  const sortKey = (sortSelect?.value || "").trim(); 
-  if (sortKey) {
-    rows.sort((a, b) => {
-      switch (sortKey) {
-        case "Vendor":
-          return getVendorName(a).localeCompare(getVendorName(b), undefined, { sensitivity: "base" });
-        case "Name":
-          return String(a.Name ?? a.name ?? "").localeCompare(
-            String(b.Name ?? b.name ?? ""), undefined, { sensitivity: "base" }
-          );
-        case "PriceAsc":
-          return (Number(a.Price ?? a.price ?? 0) - Number(b.Price ?? b.price ?? 0));
-        case "PriceDesc":
-          return (Number(b.Price ?? b.price ?? 0) - Number(a.Price ?? a.price ?? 0));
-        default:
-          return 0; 
-      }
-    });
-  }
-
-  window.FILTERED_ROWS = rows;
-
-  if (render) {
-    if (typeof renderTableAll === "function") {
-      renderTableAll(rows);
-    } else if (typeof renderTableAppend === "function") {
-      renderTableAppend(rows);
-    }
-  }
-}
 
   const all = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS : [];
-  const haveData = all.length > 0;
-
-  if (!haveData) {
+  if (!all.length) {
     window.FILTERED_ROWS = [];
     if (render) {
       try {
-        const table = document.getElementById("data-table") || ensureTable?.();
-        const tbody = table?.querySelector("tbody");
-        if (tbody) tbody.innerHTML = "";
-        if (typeof showEl === "function") showEl("table-container", false);
-        else { const tc = document.getElementById("table-container"); if (tc) tc.style.display = "none"; }
-        toggleBgHint?.();
+        const vp = document.getElementById("table-viewport");
+        if (vp) vp.style.display = "none";
+        const tc = document.getElementById("table-container");
+        if (tc) tc.style.display = "none";
       } catch {}
     }
     return [];
   }
 
+  // Read controls (INSIDE the function!)
   const qRawEl = document.getElementById("searchInput");
   const qRaw = (qRawEl && typeof qRawEl.value === "string" ? qRawEl.value : "").trim();
-  const vendorSel = (document.getElementById("vendorFilter")?.value || "").trim();
+  const vendorSel   = (document.getElementById("vendorFilter")?.value || "").trim();
   const categorySel = (window.ACTIVE_CATEGORY || document.getElementById("categoryFilter")?.value || "").trim();
+
   const q = qRaw.toLowerCase();
   const tokens = q.length ? q.split(/\s+/).filter(Boolean) : [];
-  const hasVendor = !!vendorSel;
-  const hasCategory = !!categorySel;
-  const hasSearch = tokens.length > 0;
-  if (!hasVendor && !hasCategory && !hasSearch) {
-    window.FILTERED_ROWS = all.slice();
-    if (render) {
-      if (typeof showEl === "function") showEl("table-container", true);
-      else { const tc = document.getElementById("table-container"); if (tc) tc.style.display = ""; }
-renderTable(window.FILTERED_ROWS);
-bindTableHandlersOnce?.();
-      if (typeof updateDataStatus === "function") updateDataStatus("fresh", `Showing all ${all.length}`);
-      const badge = document.getElementById("fetch-count");
-      if (badge) {
-        badge.textContent = `${all.length} / ${all.length}`;
-        badge.classList.add("ok"); badge.classList.remove("warn");
-      }
-    }
-    return window.FILTERED_ROWS;
+
+  // Filter
+  let rows = all;
+  if (vendorSel) {
+    rows = rows.filter(r => (String(r.vendor || "") === vendorSel));
+  }
+  if (categorySel) {
+    rows = rows.filter(r => String(r.Category ?? r.category ?? "").trim() === categorySel);
+  }
+  if (tokens.length) {
+    rows = rows.filter(r => {
+      const idx = rowIndex(r); // builds r._idx once
+      return tokens.every(t => idx.hay.includes(t));
+    });
   }
 
-  let filtered = all.filter((row) => {
-    let hay = "";
-    if (row && typeof row === "object") {
-      if (Array.isArray(row)) {
-        hay = row.join(" ").toLowerCase();
-      } else {
-        const vals = [];
-        ["SKU", "Name", "Category", "Vendor", "Description", "Model", "Item", "Brand"]
-          .forEach(k => { if (row[k] != null) vals.push(String(row[k])); });
-        if (vals.length === 0) {
-          for (const k in row) {
-            if (Object.prototype.hasOwnProperty.call(row, k) && row[k] != null) vals.push(String(row[k]));
-          }
-        }
-        hay = vals.join(" ").toLowerCase();
-      }
-    } else {
-      hay = String(row ?? "").toLowerCase();
-    }
-
-    if (hasVendor && !hay.includes(vendorSel.toLowerCase())) return false;
-    if (hasCategory && !hay.includes(categorySel.toLowerCase())) return false;
-    if (hasSearch) { for (const t of tokens) { if (!hay.includes(t)) return false; } }
-
-    return true;
-  });
-
-  if (sortMode === "stable" && Array.isArray(filtered)) {
+  // Optional sort
+  switch (sort) {
+    case "Vendor":
+      rows = rows.slice().sort((a,b)=>String(a.vendor||"").localeCompare(String(b.vendor||""), undefined, {sensitivity:"base"}));
+      break;
+    case "PriceAsc":
+      rows = rows.slice().sort((a,b)=>(Number(a.price||a.Price||0) - Number(b.price||b.Price||0)));
+      break;
+    case "PriceDesc":
+      rows = rows.slice().sort((a,b)=>(Number(b.price||b.Price||0) - Number(a.price||a.Price||0)));
+      break;
+    default:
+      break;
   }
 
-  window.FILTERED_ROWS = filtered;
+  window.FILTERED_ROWS = rows;
 
   if (render) {
+    renderTableAllVirtual(rows);
     try {
-      if (typeof showEl === "function") showEl("table-container", true);
-      else { const tc = document.getElementById("table-container"); if (tc) tc.style.display = ""; }
-
-      toggleBgHint?.(filtered.length === 0);
-
-renderTable(filtered);
-bindTableHandlersOnce?.();
-
-      if (typeof updateDataStatus === "function") {
-        const total = all.length, shown = filtered.length;
-        const msg = (shown === total) ? `Showing all ${shown}` : `Showing ${shown} of ${total}`;
-        updateDataStatus("fresh", msg);
-      }
       const badge = document.getElementById("fetch-count");
       if (badge) {
-        const total = all.length, shown = filtered.length;
-        badge.textContent = `${shown} / ${total}`;
-        badge.classList.toggle("ok", shown === total);
-        badge.classList.toggle("warn", shown !== total);
+        const total = Array.isArray(window.ALL_ROWS) ? window.ALL_ROWS.length : 0;
+        badge.textContent = `${rows.length} / ${total}`;
+        badge.classList.add("ok");
+        badge.classList.remove("warn");
       }
-    } catch (e) {
-      console.warn("[applyFilters] render failed", e);
-    }
+      updateDataStatus?.("fresh", `Showing ${rows.length}`);
+    } catch {}
   }
-
-  return window.FILTERED_ROWS;
+  return rows;
 }
 
 let VT = {
@@ -1761,6 +1791,31 @@ let VT = {
   lastIdx: -1,       
   raf: 0,            
 };
+
+function wireControlsOnce(){
+  if (window.__WIRED_ONCE) return; window.__WIRED_ONCE = true;
+  const vp = document.getElementById("table-viewport");
+  if (vp) vp.style.display = "";
+  const tc = document.getElementById("table-container");
+  if (tc) tc.style.display = "none";
+  const search = document.getElementById("searchInput");
+  const vendorSel = document.getElementById("vendorFilter");
+  const catSel = document.getElementById("categoryFilter");
+  const clearBtn = document.getElementById("clearFilters");
+  const trigger = () => applyFilters({ render: true, sort: "stable" });
+  search?.addEventListener("input", trigger);
+  vendorSel?.addEventListener("change", trigger);
+  catSel?.addEventListener("change", trigger);
+  clearBtn?.addEventListener("click", () => {
+    if (search) search.value = "";
+    if (vendorSel) vendorSel.value = "";
+    if (catSel) catSel.value = "";
+    window.ACTIVE_CATEGORY = "";
+    trigger();
+  });
+}
+
+
 
 function initVirtualTable(initialRows) {
   VT.scroller = document.getElementById("table-viewport");
