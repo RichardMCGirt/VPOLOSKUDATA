@@ -512,3 +512,90 @@ tbody tr:last-child td { border-bottom: none; }
   background: #fff;
   will-change: transform;
 }
+/* === Virtual table layout + polish === */
+:root{
+  --col-vendor: 140px;
+  --col-sku:    140px;
+  --col-uom:     70px;
+  --col-desc:      1fr;  /* flex column */
+  --col-helper: 180px;
+  --col-mult:    90px;
+  --col-cost:    90px;
+  --col-price:  100px;
+  --col-actions:150px;
+}
+
+/* 9-column grid shared by header + rows */
+#table-viewport .vhead,
+#table-viewport .vrow{
+  display: grid;
+  grid-template-columns:
+    var(--col-vendor)
+    var(--col-sku)
+    var(--col-uom)
+    var(--col-desc)
+    var(--col-helper)
+    var(--col-mult)
+    var(--col-cost)
+    var(--col-price)
+    var(--col-actions);
+  column-gap: 8px;
+  align-items: center;
+}
+
+/* sticky header in the scroll container */
+#table-viewport .vhead{
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--thead);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  padding: 8px 10px;
+}
+
+/* rows: height aligns with inputs/buttons */
+.vrow{
+  height: 44px;                 /* matches the controls */
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.95rem;
+}
+
+/* ellipsis for cramped text */
+.vrow > div{
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* left-align texty columns; right-align money */
+#table-viewport .vhead > div:nth-child(7),
+#table-viewport .vhead > div:nth-child(8),
+.vrow > div:nth-child(7),
+.vrow > div:nth-child(8){
+  text-align: right;
+}
+
+/* actions cell: compact controls and right-justified */
+.vrow .vactions{
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vrow .qty-input{
+  width: 64px;
+  height: 28px;
+  padding: 2px 6px;
+}
+
+.vrow .btn.add-to-cart{
+  height: 28px;
+  line-height: 26px;
+  padding: 0 10px;
+}
+
+/* optional: zebra hover for readability */
+#table-viewport .vrow:hover{ background: var(--hover); }

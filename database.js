@@ -39,6 +39,14 @@ const PRODUCT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PRODUCT_CACHE_KEY = "vanir_products_cache_v2"; 
 const PRODUCT_CACHE_SS_KEY = "vanir_products_cache_v2_ss";
 let __filterTimer = null;
+function updateTableVisibility() {
+  const show = hasAnyActiveFilter(); // true if search OR a dropdown has a value
+  const vp = document.getElementById("table-viewport");   // virtualized grid
+  const tc = document.getElementById("table-container");  // legacy table (if used)
+  if (vp) vp.style.display = show ? "" : "none";
+  if (tc) tc.style.display = show ? "" : "none";
+  toggleBgHint?.(); // keep your background hint in sync
+}
 
 function isFresh(savedAt){
   try { return (Date.now() - Number(savedAt || 0)) < PRODUCT_CACHE_TTL_MS; }
@@ -488,7 +496,7 @@ window.showLoadingBar = function(show, label=""){
 function __noteActivity(){ __LAST_ACTIVITY_TS = Date.now(); }
 
 // ===== Virtualized table renderer =====
-let VIRT_ROW_HEIGHT = 40;
+let VIRT_ROW_HEIGHT = 44;
 const VIRT_OVERSCAN = 10;
 let __virtEls = null;
 let __virtBound = false;
@@ -534,8 +542,79 @@ function __virtRowHTML(r, idx, topPx) {
       <div>${escapeHtml(r.uomMultiple==null? "" : String(r.uomMultiple))}</div>
       <div>${escapeHtml(formatMoney(r.cost))}</div>
       <div>${escapeHtml(formatMoney(unitBase(r)))}</div>
+      <!-- actions (new) -->
+      <div class="vactions" style="display:flex;align-items:center;gap:8px;">
+        <input aria-label="Quantity" type="number" class="qty-input" min="1" step="1" value="1"
+               data-idx="${idx}" style="width:70px;padding:4px 6px;">
+        <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
+      </div>
     </div>
   `;
+}
+function addToCartFromRow(row, key, qty) {
+  try {
+    if (!window.CART || !(window.CART instanceof Map)) window.CART = new Map();
+
+    const k = key || `${row.sku}|${row.vendor}|${row.uom||""}`;
+    const existing = window.CART.get(k);
+
+    const unitBaseVal = unitBase(row);
+    const item = existing || {
+      key: k,
+      sku: row.sku,
+      vendor: row.vendor,
+      uom: row.uom || "",
+      desc: row.description || "",
+      qty: 0,
+      unitBase: unitBaseVal,
+      row
+    };
+
+    item.qty = Math.max(0, Number(item.qty||0)) + Math.max(1, Number(qty||1));
+    item.unitBase = unitBaseVal; // keep fresh in case pricing updated
+
+    window.CART.set(k, item);
+
+    if (typeof renderCart === "function") renderCart();
+    if (typeof persistState === "function") persistState();
+    if (typeof showToast === "function") showToast(`Added ${item.qty} × ${item.sku} (${item.vendor})`);
+    const badge = document.getElementById("cartCountBadge");
+    if (badge) {
+      let total = 0; for (const v of window.CART.values()) total += Number(v.qty||0);
+      badge.textContent = String(total);
+    }
+  } catch (e) {
+    console.error("[addToCartFromRow] failed", e);
+    try { showToast?.("Could not add item (see console)."); } catch {}
+  }
+}
+
+function wireVirtualRowClicks() {
+  const vp = document.getElementById("table-viewport");
+  if (!vp || vp.__wiredAddClick) return;
+  vp.__wiredAddClick = true;
+
+  vp.addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest(".add-to-cart");
+    if (!btn) return;
+
+    const rowIdx = Number(btn.getAttribute("data-idx")) || 0;
+    const key = btn.getAttribute("data-key") || "";
+    const row = (Array.isArray(window.FILTERED_ROWS) ? window.FILTERED_ROWS[rowIdx] : null);
+    if (!row) return;
+
+    const holder = btn.parentElement;
+    let qty = 1;
+    if (holder) {
+      const inp = holder.querySelector(".qty-input");
+      if (inp) {
+        const v = Number(inp.value);
+        qty = Number.isFinite(v) && v > 0 ? Math.floor(v) : 1;
+      }
+    }
+
+    addToCartFromRow(row, key, qty);
+  }, { passive: true });
 }
 
 function renderVirtualTableSlice() {
@@ -578,7 +657,9 @@ function renderVirtualTableInit() {
       renderVirtualTableSlice();
     });
   }
+
   renderVirtualTableSlice();
+  wireVirtualRowClicks(); // <— make sure clicks are wired
 }
 
 function renderTableAllVirtual(rows) {
@@ -1688,8 +1769,13 @@ function refreshCategoriesFromAllRows() {
 
 function applyFilters({ render = true, sort = "stable" } = {}) {
   if (__filterTimer) clearTimeout(__filterTimer);
-  __filterTimer = setTimeout(() => __applyFiltersNow({ render, sort }), 180);
+  __filterTimer = setTimeout(() => {
+    __applyFiltersNow({ render, sort });
+    updateTableVisibility();
+  }, 180);
 }
+
+
 
 function __applyFiltersNow({ render = true, sort = "stable" } = {}) {
   const ONLY_AFTER_INTERACTION =
@@ -1745,7 +1831,7 @@ function __applyFiltersNow({ render = true, sort = "stable" } = {}) {
       return tokens.every(t => idx.hay.includes(t));
     });
   }
-
+updateTableVisibility();
   // Optional sort
   switch (sort) {
     case "Vendor":
@@ -1777,6 +1863,7 @@ function __applyFiltersNow({ render = true, sort = "stable" } = {}) {
     } catch {}
   }
   return rows;
+  
 }
 
 let VT = {
@@ -1791,6 +1878,20 @@ let VT = {
   lastIdx: -1,       
   raf: 0,            
 };
+document.getElementById("searchInput")?.addEventListener("input", () => {
+  window.USER_INTERACTED = true;
+  applyFilters({ render: true, sort: "stable" });
+});
+
+document.getElementById("vendorFilter")?.addEventListener("change", () => {
+  window.USER_INTERACTED = true;
+  applyFilters({ render: true, sort: "stable" });
+});
+
+document.getElementById("categoryFilter")?.addEventListener("change", () => {
+  window.USER_INTERACTED = true;
+  applyFilters({ render: true, sort: "stable" });
+});
 
 function wireControlsOnce(){
   if (window.__WIRED_ONCE) return; window.__WIRED_ONCE = true;

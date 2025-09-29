@@ -59,14 +59,16 @@
   </section>
 
 <!-- Virtualized table (fast for 10k+ rows) -->
-<!-- Virtualized table (fast for 10k+ rows) -->
-<div id="table-viewport" aria-label="Products table">
+<div id="table-viewport" aria-label="Products table" style="display:none;">
   <div class="vhead">
     <div>Vendor</div><div>SKU</div><div>UOM</div><div>Description</div>
     <div>Helper</div><div>Multiple</div><div>Cost</div><div>Price Ext</div>
+    <div class="col-actions">Qty / Add</div> <!-- NEW -->
   </div>
   <div id="table-spacer"></div>
 </div>
+
+
 
 
   <!-- Toast -->
