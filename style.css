@@ -838,3 +838,204 @@ tbody tr:last-child td { border-bottom: none; }
   }
 }
 
+/* ===== Mobile: SKU + Vendor + UOM visible, Actions fixed right ===== */
+@media (max-width: 430px){
+
+  /* Header shows only SKU and Add */
+  #table-viewport .vhead{
+    display: grid;
+    grid-template-columns: 1fr 140px; /* left: SKU, right: Actions */
+    column-gap: 6px;
+  }
+  #table-viewport .vhead > :not(:nth-child(2)):not(:nth-child(9)){
+    display: none !important;
+  }
+  #table-viewport .vhead > :nth-child(2){ text-align: left; }
+  #table-viewport .vhead > :nth-child(9){ text-align: right; }
+
+  /* Rows: 3-line left stack (SKU, Vendor, UOM) + Actions on right */
+  #table-viewport .vrow{
+    display: grid;
+    grid-template-columns: 1fr 140px;  /* left grows, right = actions */
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      "sku    actions"
+      "vendor actions"
+      "uom    actions";
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 2px;
+    height: auto;
+    min-height: 68px;               /* comfy tap area */
+    padding: 6px 8px;
+  }
+
+  /* Map cells to areas */
+  /* SKU (DOM col 2) */
+  #table-viewport .vrow > :nth-child(2){
+    grid-area: sku;
+    font-weight: 600;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Vendor (DOM col 1) */
+  #table-viewport .vrow > :nth-child(1){
+    grid-area: vendor;
+    font-size: 12px;
+    color: var(--muted, #666);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* UOM (DOM col 3) — small pill/badge */
+  #table-viewport .vrow > :nth-child(3){
+    grid-area: uom;
+    justify-self: start;
+    font-size: 11px;
+    line-height: 1.8;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--chip, #f6f7f8);
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Actions (DOM col 9) */
+  #table-viewport .vrow > :nth-child(9){
+    grid-area: actions;
+    justify-self: end;
+  }
+  .vrow .vactions{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: 140px;                  /* matches right column width */
+    justify-content: flex-end;
+  }
+  .vrow .qty-input{
+    width: 60px;
+    height: 32px;
+    padding: 4px 6px;
+    font-size: 16px;               /* prevents iOS zoom */
+  }
+  .vrow .btn.add-to-cart{
+    height: 32px;
+    line-height: 30px;
+    padding: 0 10px;
+    font-size: 16px;               /* prevents iOS zoom */
+  }
+
+  /* Hide non-essentials on mobile to keep everything on one screen */
+  /* Description(4), Helper(5), Multiple(6), Cost(7), Price(8) */
+  #table-viewport .vrow > :nth-child(4),
+  #table-viewport .vrow > :nth-child(5),
+  #table-viewport .vrow > :nth-child(6),
+  #table-viewport .vrow > :nth-child(7),
+  #table-viewport .vrow > :nth-child(8){
+    display: none !important;
+  }
+}
+/* ===== MOBILE FIX: force SKU+Vendor+UOM left, Qty/Add right (iPhone) ===== */
+@media (max-width: 430px){
+
+  /* 1) Header: show only SKU + Actions, hide others */
+  #table-viewport .vhead{
+    display: grid !important;
+    grid-template-columns: 1fr 140px !important;
+    column-gap: 6px !important;
+  }
+  #table-viewport .vhead > *{ display: none !important; }
+  #table-viewport .vhead > :nth-child(2){ display:block !important; text-align:left; }
+  #table-viewport .vhead > :nth-child(9){ display:block !important; text-align:right; }
+
+  /* 2) Rows: two columns (left stack = 3 lines), right = actions  */
+  #table-viewport .vrow{
+    position: absolute;            /* keep virtualization intact */
+    left: 0; right: 0;
+    display: grid !important;
+    grid-template-columns: 1fr 140px !important;  /* left grows, right fixed */
+    grid-template-rows: auto auto auto !important;
+    grid-template-areas:
+      "sku     actions"
+      "vendor  actions"
+      "uom     actions";
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 2px;
+    height: auto !important;
+    min-height: 68px;              /* comfy tap target, no overlap */
+    padding: 6px 8px;
+  }
+
+  /* 3) Start by hiding everything, then explicitly show the 4 cells we want */
+  #table-viewport .vrow > *{ display:none !important; }
+  /* SKU (DOM col 2) */
+  #table-viewport .vrow > :nth-child(2){
+    display:block !important;
+    grid-area: sku !important;
+    font-weight: 600;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    position: static !important;   /* ensure not sticky */
+    left: auto !important;
+    z-index: auto !important;
+    border-right: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+  /* Vendor (DOM col 1) */
+  #table-viewport .vrow > :nth-child(1){
+    display:block !important;
+    grid-area: vendor !important;
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  /* UOM (DOM col 3) */
+  #table-viewport .vrow > :nth-child(3){
+    display:inline-block !important;
+    grid-area: uom !important;
+    font-size: 11px; line-height: 1.8;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--chip, #f6f7f8);
+    max-width: 100%;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  /* Actions (DOM col 9) */
+  #table-viewport .vrow > :nth-child(9){
+    display:block !important;
+    grid-area: actions !important;
+    justify-self: end;
+  }
+  .vrow .vactions{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: 140px;                  /* match actions column */
+    justify-content: flex-end;
+  }
+  .vrow .qty-input{
+    width: 60px; height: 32px; padding: 4px 6px; font-size: 16px;
+  }
+  .vrow .btn.add-to-cart{
+    height: 32px; line-height: 30px; padding: 0 10px; font-size: 16px;
+  }
+
+  /* 4) No horizontal scroll needed; other columns stay hidden cleanly */
+}
+@media (max-width: 430px){
+  /* Rows: 3-line left stack + Actions on right */
+  #table-viewport .vrow{
+    height: 72px !important;    /* fixed height so virtualization is predictable */
+    grid-template-rows: 1fr 1fr 1fr;
+  }
+}

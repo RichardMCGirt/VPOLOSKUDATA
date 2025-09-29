@@ -500,6 +500,12 @@ let VIRT_ROW_HEIGHT = 44;
 const VIRT_OVERSCAN = 10;
 let __virtEls = null;
 let __virtBound = false;
+function __syncRowHeightForViewport(){
+  // Match the CSS fixed height we set for mobile
+  VIRT_ROW_HEIGHT = window.matchMedia("(max-width: 430px)").matches ? 72 : 44;
+}
+window.addEventListener("resize", __syncRowHeightForViewport);
+document.addEventListener("DOMContentLoaded", __syncRowHeightForViewport);
 
 function __virtEnsureEls() {
   if (__virtEls) return __virtEls;
@@ -527,8 +533,10 @@ function __virtMeasureRowHeight() {
   const els = __virtEnsureEls();
   if (!els) return;
   const h = els.measureRow.getBoundingClientRect().height | 0;
-  if (h > 0) VIRT_ROW_HEIGHT = h;
+  // Never go below the current baseline
+  if (h > VIRT_ROW_HEIGHT) VIRT_ROW_HEIGHT = h;
 }
+
 
 function __virtRowHTML(r, idx, topPx) {
   const key = `${String(r.sku||"")}|${String(r.vendor||"")}|${String(r.uom||"")}`;
