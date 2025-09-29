@@ -48,14 +48,7 @@
   <div id="categoryChips" class="chips scroller hidden" aria-label="Quick category filters"></div>
 
   <!-- Data table container -->
-  <div id="table-container" class="card" style="display:none;">
-    <table id="data-table">
-      <thead></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
- 
+  
   </section>
 
 <!-- Virtualized table (fast for 10k+ rows) -->
@@ -63,15 +56,12 @@
   <div class="vhead">
     <div>Vendor</div><div>SKU</div><div>UOM</div><div>Description</div>
     <div>Helper</div><div>Multiple</div><div>Cost</div><div>Price Ext</div>
-    <div class="col-actions">Qty / Add</div> <!-- NEW -->
+    <div class="col-actions">Qty</div> 
   </div>
   <div id="table-spacer"></div>
 </div>
 
-
-
-
-  <!-- Toast -->
+<!-- Toast -->
   <div id="toast" role="status" aria-live="polite">Done</div>
 
 <!-- Loading overlay -->
@@ -84,7 +74,6 @@
     <div id="loadingBarMeta" class="loading-meta"></div>
   </div>
 </div>
-
 
 <div id="gentleModeRow" class="row-gap" style="margin:6px 0 10px 0; display:none;">
   <label style="display:inline-flex;align-items:center;gap:8px;font-size:0.9rem;">
@@ -126,10 +115,7 @@
   </div>
 </div>
 
-
-
-
-  <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
 <script src="database.js"></script>
 
 

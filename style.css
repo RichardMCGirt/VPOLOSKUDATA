@@ -483,9 +483,12 @@ tbody tr:last-child td { border-bottom: none; }
 /* Makes virtualization smooth */
 #table-viewport {
   position: relative;
-  height: 70vh;           /* or whatever you like */
-  overflow: auto;
+  height: 80vh;           /* or whatever you like */
+  overflow-y: auto;      /* vertical scroll only */
+    overflow-x: hidden;    /* 🔒 no horizontal scroll */
+  box-sizing: border-box;
   border: 1px solid #ddd;
+  width: 100%;
 }
 
 #table-viewport .vhead {
