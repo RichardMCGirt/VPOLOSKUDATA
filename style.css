@@ -521,7 +521,7 @@ tbody tr:last-child td { border-bottom: none; }
   --col-sku:    140px;
   --col-uom:     70px;
 --col-desc: minmax(240px, 1fr);  /* was 1fr */  
---col-helper: 0px;
+--col-helper: 180px;
   --col-mult:    90px;
   --col-cost:    90px;
   --col-price:  100px;
