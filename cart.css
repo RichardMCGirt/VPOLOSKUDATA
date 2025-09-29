@@ -13,7 +13,7 @@
     @media (max-width: 640px) { .full-width-mobile { width: 100%; } body { padding-bottom: calc(12px + env(safe-area-inset-bottom)); } }
 
     #cart-table { width: 100%; border-collapse: collapse; }
-    #cart-table th, #cart-table td { vertical-align: top; }
+    #cart-table th, #cart-table td { vertical-align: middle; }
 
     #fillin-section.card { padding: 12px; border: 1px solid rgba(0,0,0,.08); border-radius: 12px; background: var(--card, #fff); margin-bottom: 12px; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
