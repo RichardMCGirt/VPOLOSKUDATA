@@ -752,6 +752,27 @@ function rowMatches(r, qObj){
   return true;
 }
 
+// === One-time migration from old storage key ===
+(function migrateLegacyCart(){
+  const NEW_KEY = "vanir_cart_v1";
+  const OLD_KEY = "vanir_cart";
+  try {
+    const already = localStorage.getItem(NEW_KEY);
+    const legacy  = localStorage.getItem(OLD_KEY);
+    if (!already && legacy) {
+      // legacy format was Array.from(CART.entries())
+      const entries = JSON.parse(legacy);
+      if (Array.isArray(entries)) {
+        // Build CART Map from entries then let persistState() write v1 schema
+        try { window.CART = new Map(entries); } catch { /* ignore */ }
+        // If you already have CART as a Map, this is effectively a restore:
+        if (typeof persistState === "function") persistState();
+      }
+    }
+  } catch {}
+})();
+
+
 function __backoffDelay(attempt){
   const base = Math.min(16000, 500 * Math.pow(2, attempt)); 
   const jitter = Math.floor(Math.random() * 333);
@@ -853,13 +874,6 @@ function openOrFocusCart(e){
   try { cartChannel?.postMessage({ type: "focus" }); } catch {}
 }
 
-function persistCart() {
-  try {
-    localStorage.setItem("vanir_cart", JSON.stringify(Array.from(CART.entries())));
-  } catch (err) { console.error("Persist cart failed", err); }
-}
-
-persistCart();
  document.addEventListener('DOMContentLoaded', () => {
     const row = document.getElementById('gentleModeRow');
     if (row) row.hidden = true; 

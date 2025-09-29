@@ -225,6 +225,7 @@ function setSaved(nextState) {
   }
 
   async function initDropdowns(service) {
+    
     setStatus("Loading dropdowns…", "info");
     ["branch","fieldMgr","neededBy","reason"].forEach(k => els[k]?.setAttribute("aria-busy","true"));
     try {
@@ -700,54 +701,71 @@ function normalizeSaved(state) {
   return s;
 }
 
-  // ---------- Init ----------
-  document.addEventListener("DOMContentLoaded", async () => {
-    // Show/hide API key banner
-    updateBannerVisibility();
 
-    // Default global margin if not set
-    if (localStorage.getItem(GLOBAL_MARGIN_KEY) == null) {
-      setGlobalMarginPct(30);
-    }
 
-    // Airtable init
-    let service;
-    try { service = new window.AirtableService(); }
-    catch (e) { logger.error?.("init", e); setStatus("Airtable init failed", "err"); showToast("Airtable init failed — check console"); }
+document.addEventListener("DOMContentLoaded", async () => {
+  // 0) Ensure a default margin exists *before* any reads/renders
+  if (!localStorage.getItem("vanir_global_margin_pct")) {
+    localStorage.setItem("vanir_global_margin_pct", "30");
+  }
 
-    if (service) {
-      await initDropdowns(service);
+  // 1) Hydrate the margin input from storage (so UI shows correct value)
+  setGlobalMarginPct(getGlobalMarginPct());
+
+  // 2) Wire cart UI controls (once)
+  wireClearAll();
+  wireAddLabor();
+  wireGlobalMargin();
+
+  // 3) Instant paint from localStorage (uses current global margin)
+  const state = getSaved();
+  renderSavedCart(state);
+
+  // 4) Show/hide API key banner (pure UI)
+  updateBannerVisibility();
+
+  // 5) Defer Airtable work so it never blocks the first paint
+  const startAirtable = async () => {
+    try {
+      const svc = new window.AirtableService();
+      await initDropdowns(svc);
       const params = new URLSearchParams(location.search);
       const recId = params.get("rec");
-      await prefillIfRecord(service, recId);
-      els.btnSave?.addEventListener("click", async () => {
-        try {
-          await saveToAirtable(service, recId);
-        } catch { /* handled above */ }
-      });
+      await prefillIfRecord(svc, recId);
+      // If you have a save button wiring function, keep it:
+      // wireSaveButton(svc);
+    } catch (e) {
+      console.warn("Dropdown init failed", e);
+      // non-fatal: cart already rendered
     }
-
-    // Cart wiring
-    wireClearAll();
-    wireAddLabor();
-    wireGlobalMargin();
-
-    const state = getSaved();
-    renderSavedCart(state);
-
-    // Cross-tab updates (from index.html or another cart tab)
-if (bc && !bc._bound) {
-  bc._bound = true;
-  bc.onmessage = (ev) => {
-    const t = ev?.data?.type;
-    if (t === "focus") { try { window.focus(); } catch {} return; }
-    if (t !== "cart:update" && t !== "cartUpdate") return;
-
-    const s = normalizeSaved(getSaved());   // heal missing keys
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
-    renderSavedCart(s);
   };
+  (window.requestIdleCallback ? requestIdleCallback(startAirtable) : setTimeout(startAirtable, 0));
+
+  // 6) Cross-tab updates (once)
+  if (bc && !bc._bound) {
+    bc._bound = true;
+    bc.onmessage = (ev) => {
+      const t = ev?.data?.type;
+      if (t === "focus") { try { window.focus(); } catch {} return; }
+      if (t !== "cart:update" && t !== "cartUpdate") return;
+
+      const s = normalizeSaved(getSaved());
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
+      renderSavedCart(s);
+    };
+  }
+});
+
+
+async function bootAirtable(){
+  try {
+    const svc = new window.AirtableService();
+    await initDropdowns(svc);         // populate Branch / FM / NeededBy / Reason
+    wireSaveButton(svc);
+  } catch (e) {
+    // non-fatal
+    console.warn("Dropdown init failed", e);
+  }
 }
 
-  });
 })();

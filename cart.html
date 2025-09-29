@@ -57,10 +57,15 @@
           <select id="fieldManagerSelect"><option value="">—</option></select>
         </div>
 
-        <div class="field">
-          <label class="field-label" for="neededBySelect">Needed By</label>
-          <select id="neededBySelect"><option value="">—</option></select>
-        </div>
+    <div class="field">
+  <label class="field-label" for="neededBySelect">Needed By</label>
+  <select id="neededBySelect">
+    <option value="" selected>— Select —</option>
+    <option value="ASAP">ASAP</option>
+    <option value="Tomorrow">Tomorrow</option>
+  </select>
+</div>
+
 
         <div class="field">
           <label class="field-label" for="jobName">Job Name</label>
@@ -77,10 +82,24 @@
           <input id="elevation" type="text" placeholder="Elevation" />
         </div>
 
-        <div class="field">
-          <label class="field-label" for="reasonSelect">Reason For Fill In</label>
-          <select id="reasonSelect"><option value="">—</option></select>
-        </div>
+       <div class="field">
+  <label class="field-label" for="reasonSelect">Reason For Fill In</label>
+  <select id="reasonSelect">
+    <option value="" selected>— Select —</option>
+    <option value="Takeoff Incorrect">Takeoff Incorrect</option>
+    <option value="Theft">Theft</option>
+    <option value="Subcontractor Installed Incorrectly">Subcontractor Installed Incorrectly</option>
+    <option value="Missing Options">Missing Options</option>
+    <option value="Ordered Incorrectly">Ordered Incorrectly</option>
+    <option value="Scope Not Followed">Scope Not Followed</option>
+    <option value="Damaged">Damaged</option>
+    <option value="Scope Has Changed">Scope Has Changed</option>
+    <option value="Borrowed Material For Another Job">Borrowed Material For Another Job</option>
+    <option value="Warranty Item">Warranty Item</option>
+    <option value="Other">Other</option>
+  </select>
+</div>
+
 
         <div class="field">
           <label class="field-label" for="pleaseDescribe">Please Describe</label>
@@ -146,9 +165,58 @@
 
   <script src="airtable.service.js"></script>
 
-  <script src="cart.js"></script>
-    <script src="patch.js"></script>
+<script src="airtable.service.js"></script>
+<script src="cart.js"></script>
+<script src="patch.js"></script>
 
+
+<script>
+(function(){
+  function setNeededByOptions(){
+    var el = document.getElementById("neededBySelect");
+    if (!el) return;
+    while (el.firstChild) el.removeChild(el.firstChild);
+    el.appendChild(new Option("— Select —", "", true, false));
+    ["ASAP","Tomorrow"].forEach(function(v){
+      el.appendChild(new Option(v, v));
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", setNeededByOptions);
+  } else {
+    setNeededByOptions();
+  }
+})();
+
+(function(){
+  function setReasonOptions(){
+    var el = document.getElementById("reasonSelect");
+    if (!el) return;
+    while (el.firstChild) el.removeChild(el.firstChild);
+    el.appendChild(new Option("— Select —", "", true, false));
+    [
+      "Takeoff Incorrect",
+      "Theft",
+      "Subcontractor Installed Incorrectly",
+      "Missing Options",
+      "Ordered Incorrectly",
+      "Scope Not Followed",
+      "Damaged",
+      "Scope Has Changed",
+      "Borrowed Material For Another Job",
+      "Warranty Item",
+      "Other"
+    ].forEach(function(v){ el.appendChild(new Option(v, v)); });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", setReasonOptions);
+  } else {
+    setReasonOptions();
+  }
+})();
+</script>
 
 </body>
 </html>
