@@ -600,80 +600,97 @@ tbody tr:last-child td { border-bottom: none; }
 /* optional: zebra hover for readability */
 #table-viewport .vrow:hover{ background: var(--hover); }
 /* ===== iPhone 14 / small-screen tuning ===== */
+/* ===== Mobile: make SKU first & sticky (iPhone 14 width ~390px) ===== */
 @media (max-width: 430px){
-  /* Keep the filter controls visible while scrolling */
-  #controls{
-    position: sticky;
-    top: calc(env(safe-area-inset-top) + 8px);
-    z-index: 900;
-    background: rgba(255,255,255,.96);
-    backdrop-filter: saturate(1.05) blur(8px);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: var(--shadow);
-    padding: 10px;
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  /* Prevent iOS Safari auto-zoom (inputs <16px cause zoom) */
-  input[type="search"],
-  select,
-  input[type="number"],
-  button { font-size: 16px; }
-
-  /* Category chips live under the sticky controls */
-  #categoryChips{
-    position: sticky;
-    top: calc(env(safe-area-inset-top) + 8px + 76px); /* ~controls height */
-    z-index: 850;
-    background: linear-gradient(#fff, rgba(255,255,255,.96));
-    margin-top: 8px;
-  }
-
-  /* Make the virtual table fill the remaining viewport height
-     Use dynamic viewport units to play nice with Safari’s URL bar */
+  /* allow horizontal scroll in the virtual grid when needed */
   #table-viewport{
-    height: calc(100dvh - (env(safe-area-inset-top) + 8px + 76px + 54px)); /* controls + chips + padding */
-    margin-bottom: env(safe-area-inset-bottom);
+    overflow-x: none;
+    /* keeps vertical inertia on iOS too (you already have -webkit-overflow-scrolling) */
   }
 
-  /* Compact the grid: hide Helper + Multiple columns on mobile */
-  #table-viewport .vhead,
+  /* We’re hiding columns 5 & 6 (Helper, Multiple) in your mobile rules already.
+     Remaining DOM order is:
+       1 Vendor, 2 SKU, 3 UOM, 4 Description, 7 Cost, 8 Price, 9 Actions
+     Below, we RE-MAP these into grid columns so SKU becomes column 1,
+     then Vendor column 2, then the rest in sequence. */
+
+  /* header grid placement */
+  #table-viewport .vhead{
+    /* 7 visible columns on mobile after we hide Helper & Multiple */
+    grid-template-columns:
+      140px   /* SKU (sticky)   */
+      120px   /* Vendor         */
+      56px    /* UOM            */
+      1fr     /* Description    */
+      90px    /* Cost           */
+      100px   /* Price          */
+      132px;  /* Actions        */
+  }
+  /* rows grid placement (match header) */
   #table-viewport .vrow{
     grid-template-columns:
-      120px   /* Vendor   */
-      140px   /* SKU      */
-      56px    /* UOM      */
-      1fr     /* Desc     */
-      /* (Helper hidden) */
-      /* (Multiple hidden) */
-      90px    /* Cost     */
-      100px   /* Price    */
-      132px;  /* Actions  */
-    column-gap: 6px;
+      140px 120px 56px 1fr 90px 100px 132px;
   }
 
-  /* Hide 5th & 6th columns (Helper, Multiple) on mobile */
+  /* Hide Helper (5) & Multiple (6) as you already do */
   #table-viewport .vhead > :nth-child(5),
   #table-viewport .vhead > :nth-child(6),
   .vrow > :nth-child(5),
-  .vrow > :nth-child(6){
-    display: none !important;
+  .vrow > :nth-child(6){ display:none !important; }
+
+  /* ===== Remap each remaining column to the intended slot ===== */
+  /* SKU (DOM 2) -> grid col 1 and STICKY */
+  #table-viewport .vhead > :nth-child(2),
+  #table-viewport .vrow  > :nth-child(2){
+    grid-column: 1;
+    position: sticky;
+    left: 0;
+    z-index: 3;                 /* above scrolled content */
+    background: var(--bg);      /* so text doesn't bleed under */
+    border-right: 1px solid var(--border);
+    /* subtle shadow edge to indicate stickiness */
+    box-shadow: 1px 0 0 rgba(0,0,0,.04);
   }
 
-  /* Money columns right-aligned stay readable */
-  #table-viewport .vhead > :nth-child(6), /* becomes Cost after hides */
+  /* Vendor (DOM 1) -> grid col 2 */
+  #table-viewport .vhead > :nth-child(1),
+  #table-viewport .vrow  > :nth-child(1){ grid-column: 2; }
+
+  /* UOM (DOM 3) -> grid col 3 */
+  #table-viewport .vhead > :nth-child(3),
+  #table-viewport .vrow  > :nth-child(3){ grid-column: 3; }
+
+  /* Description (DOM 4) -> grid col 4 */
+  #table-viewport .vhead > :nth-child(4),
+  #table-viewport .vrow  > :nth-child(4){ grid-column: 4; }
+
+  /* Cost (DOM 7) -> grid col 5 (right aligned) */
   #table-viewport .vhead > :nth-child(7),
-  .vrow > :nth-child(6),
-  .vrow > :nth-child(7){
+  #table-viewport .vrow  > :nth-child(7){
+    grid-column: 5;
     text-align: right;
   }
 
-  /* Row height & controls sizing for thumb reach */
-  .vrow{ height: 48px; padding: 0 8px; }
-  .vrow .qty-input{ width: 64px; height: 32px; padding: 4px 8px; }
-  .vrow .btn.add-to-cart{ height: 32px; line-height: 30px; padding: 0 10px; }
+  /* Price (DOM 8) -> grid col 6 (right aligned) */
+  #table-viewport .vhead > :nth-child(8),
+  #table-viewport .vrow  > :nth-child(8){
+    grid-column: 6;
+    text-align: right;
+  }
+
+  /* Actions (DOM 9) -> grid col 7 (right) */
+  #table-viewport .vhead > :nth-child(9),
+  #table-viewport .vrow  > :nth-child(9){
+    grid-column: 7;
+    justify-self: end;
+  }
+
+  /* keep row height/tap targets comfy */
+  .vrow{ height: 48px; }
+  .vrow .qty-input{ height: 32px; }
+  .vrow .btn.add-to-cart{ height: 32px; line-height: 30px; }
+}
+
 
   /* Make the cart FAB respect safe-area and be easy to tap */
   .cart-fab{
@@ -681,9 +698,143 @@ tbody tr:last-child td { border-bottom: none; }
     right: max(10px, env(safe-area-inset-right));
     padding: 10px 14px;
   }
-}
+
 
 /* iOS-specific polish */
 @supports (-webkit-touch-callout: none){
   #table-viewport{ -webkit-overflow-scrolling: touch; }
 }
+
+@media (max-width: 430px){
+  /* 1) Header SKU: NOT sticky */
+  #table-viewport .vhead > :nth-child(2){
+    position: static !important;
+    left: auto !important;
+    z-index: auto !important;
+    box-shadow: none !important;
+    border-right: none !important;
+    background: transparent !important;
+  }
+
+  /* 2) Row SKU: keep sticky, but allow full-name horizontal scroll */
+  #table-viewport .vrow > :nth-child(2){
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    box-shadow: 1px 0 0 rgba(0,0,0,.04);
+
+    /* show whole SKU by letting the cell itself scroll left/right */
+    overflow-x: auto;          /* <-- enables inner scroll */
+    overflow-y: hidden;
+    white-space: nowrap;       /* keep on one line (stable row height) */
+    text-overflow: clip;       /* no ellipsis; we’re scrolling instead */
+    -webkit-overflow-scrolling: touch;  /* smooth scroll on iOS */
+  }
+
+  /* (Optional) widen SKU a bit so less scrolling is needed */
+  #table-viewport .vhead,
+  #table-viewport .vrow{
+    grid-template-columns:
+      160px   /* SKU (sticky) */
+      120px   /* Vendor       */
+      56px    /* UOM          */
+      1fr     /* Description  */
+      90px    /* Cost         */
+      100px   /* Price        */
+      132px;  /* Actions      */
+  }
+}
+
+/* ===== Mobile: show SKU + Add together, no horizontal scroll ===== */
+@media (max-width: 430px){
+
+  /* Compact header: show only "SKU" and "Add" */
+  #table-viewport .vhead{
+    display: grid;
+    grid-template-columns: 1fr 140px; /* left: SKU, right: Actions */
+    column-gap: 6px;
+  }
+  /* Hide all header cells except SKU (2) and Actions (9) */
+  #table-viewport .vhead > :not(:nth-child(2)):not(:nth-child(9)){
+    display: none !important;
+  }
+  #table-viewport .vhead > :nth-child(2){ text-align: left; }
+  #table-viewport .vhead > :nth-child(9){ text-align: right; }
+
+  /* Rows: 2-line layout with SKU on first line (bold), Description under it,
+     and the Actions (Qty + Add) column fixed on the right */
+  #table-viewport .vrow{
+    display: grid;
+    grid-template-columns: 1fr 140px; /* left grows, right is actions */
+    grid-template-rows: auto auto;
+    grid-template-areas:
+      "sku actions"
+      "desc actions";
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 2px;
+    height: auto;                 /* let it grow to fit two lines */
+    min-height: 56px;             /* comfy tap target */
+    padding: 6px 8px;
+  }
+
+  /* Map cells to areas */
+  /* SKU (DOM col 2) -> area 'sku' */
+  #table-viewport .vrow > :nth-child(2){
+    grid-area: sku;
+    font-weight: 600;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;      /* clean truncation if long */
+  }
+
+  /* Description (DOM col 4) -> area 'desc' (small, muted) */
+  #table-viewport .vrow > :nth-child(4){
+    grid-area: desc;
+    font-size: 12px;
+    opacity: .8;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Actions (DOM col 9) stays actions on the right */
+  #table-viewport .vrow > :nth-child(9){
+    grid-area: actions;
+    justify-self: end;
+  }
+  /* Make sure the actions container fits */
+  .vrow .vactions{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: 140px;                 /* matches grid column */
+    justify-content: flex-end;
+  }
+  .vrow .qty-input{
+    width: 60px;
+    height: 32px;
+    padding: 4px 6px;
+    font-size: 16px;              /* avoid iOS zoom */
+  }
+  .vrow .btn.add-to-cart{
+    height: 32px;
+    line-height: 30px;
+    padding: 0 10px;
+    font-size: 16px;              /* avoid iOS zoom */
+  }
+
+  /* Hide non-essential columns on mobile to free space:
+     Vendor(1), UOM(3), Helper(5), Multiple(6), Cost(7), Price(8) */
+  #table-viewport .vrow > :nth-child(1),
+  #table-viewport .vrow > :nth-child(3),
+  #table-viewport .vrow > :nth-child(5),
+  #table-viewport .vrow > :nth-child(6),
+  #table-viewport .vrow > :nth-child(7),
+  #table-viewport .vrow > :nth-child(8){
+    display: none !important;
+  }
+}
+
