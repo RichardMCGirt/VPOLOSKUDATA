@@ -1635,6 +1635,44 @@ function showDescSheetForRow(row){
   qty.value = "0";
   setTimeout(() => { try { qty.focus(); qty.select(); } catch {} }, 0);
 }
+function showDescSheetForRow(row){
+  __dsLastRow = row || null;
+  const $ = (id) => document.getElementById(id);
+
+  document.getElementById("ds-title").textContent = String(row?.sku || "—");
+  $("ds-sku").textContent    = String(row?.sku || "—");
+  $("ds-vendor").textContent = String(row?.vendor || "—");
+  $("ds-uom").textContent    = String(row?.uom || "—");
+  $("ds-helper").textContent = String(row?.skuHelper || "—");
+  try { $("ds-price").textContent = formatMoney(unitBase(row)); }
+  catch { $("ds-price").textContent = "—"; }
+  $("ds-desc").textContent   = String(row?.description || "—");
+
+  __dsLastKey = `${String(row?.sku||"")}|${String(row?.vendor||"")}|${String(row?.uom||"")}`;
+
+  const sheet = document.getElementById("desc-sheet");
+  sheet.hidden = false;
+
+  // prevent background scroll while open
+  try { document.body.classList.add("no-scroll"); } catch {}
+
+  const qty = document.getElementById("ds-qty");
+  qty.value = "0";
+  setTimeout(() => { try { qty.focus(); qty.select(); } catch {} }, 0);
+}
+(function wireDescClose(){
+  const sheet = document.getElementById("desc-sheet");
+  const closeBtn = document.getElementById("ds-close");
+  const backdrop = sheet?.querySelector(".ds-backdrop");
+
+  function hide(){
+    sheet.hidden = true;
+    try { document.body.classList.remove("no-scroll"); } catch {}
+  }
+
+  closeBtn?.addEventListener("click", hide);
+  backdrop?.addEventListener("click", hide);
+})();
 
 function hideDescSheet(){
   const sheet = document.getElementById("desc-sheet");

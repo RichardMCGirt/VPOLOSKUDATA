@@ -190,7 +190,8 @@ tbody tr:hover{ background:var(--hover); }
 
 tbody tr:last-child td { border-bottom: none; }
 
-.qty-input{ width:80px; padding:6px; border:1px solid var(--border); border-radius: 8px; }
+.qty-input{ width:80px; padding:6px; border:1px solid var(--border);   text-align: center;
+ border-radius: 8px; }
 
 @media (max-width: 720px){
  .auth-row{ justify-content:center; }
@@ -613,7 +614,7 @@ tbody tr:last-child td { border-bottom: none; }
   justify-self: end;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
 }
 
 .vrow .qty-input{
@@ -1198,7 +1199,7 @@ tbody tr:last-child td { border-bottom: none; }
   justify-self: end;   /* aligns to the right edge of its grid cell */
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 50px;
   min-width: 160px;    /* prevents overlapping */
 }
 /* Make the sheet a top-level stacking context */
