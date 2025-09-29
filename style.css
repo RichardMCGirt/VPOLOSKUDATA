@@ -599,3 +599,91 @@ tbody tr:last-child td { border-bottom: none; }
 
 /* optional: zebra hover for readability */
 #table-viewport .vrow:hover{ background: var(--hover); }
+/* ===== iPhone 14 / small-screen tuning ===== */
+@media (max-width: 430px){
+  /* Keep the filter controls visible while scrolling */
+  #controls{
+    position: sticky;
+    top: calc(env(safe-area-inset-top) + 8px);
+    z-index: 900;
+    background: rgba(255,255,255,.96);
+    backdrop-filter: saturate(1.05) blur(8px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 10px;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  /* Prevent iOS Safari auto-zoom (inputs <16px cause zoom) */
+  input[type="search"],
+  select,
+  input[type="number"],
+  button { font-size: 16px; }
+
+  /* Category chips live under the sticky controls */
+  #categoryChips{
+    position: sticky;
+    top: calc(env(safe-area-inset-top) + 8px + 76px); /* ~controls height */
+    z-index: 850;
+    background: linear-gradient(#fff, rgba(255,255,255,.96));
+    margin-top: 8px;
+  }
+
+  /* Make the virtual table fill the remaining viewport height
+     Use dynamic viewport units to play nice with Safari’s URL bar */
+  #table-viewport{
+    height: calc(100dvh - (env(safe-area-inset-top) + 8px + 76px + 54px)); /* controls + chips + padding */
+    margin-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Compact the grid: hide Helper + Multiple columns on mobile */
+  #table-viewport .vhead,
+  #table-viewport .vrow{
+    grid-template-columns:
+      120px   /* Vendor   */
+      140px   /* SKU      */
+      56px    /* UOM      */
+      1fr     /* Desc     */
+      /* (Helper hidden) */
+      /* (Multiple hidden) */
+      90px    /* Cost     */
+      100px   /* Price    */
+      132px;  /* Actions  */
+    column-gap: 6px;
+  }
+
+  /* Hide 5th & 6th columns (Helper, Multiple) on mobile */
+  #table-viewport .vhead > :nth-child(5),
+  #table-viewport .vhead > :nth-child(6),
+  .vrow > :nth-child(5),
+  .vrow > :nth-child(6){
+    display: none !important;
+  }
+
+  /* Money columns right-aligned stay readable */
+  #table-viewport .vhead > :nth-child(6), /* becomes Cost after hides */
+  #table-viewport .vhead > :nth-child(7),
+  .vrow > :nth-child(6),
+  .vrow > :nth-child(7){
+    text-align: right;
+  }
+
+  /* Row height & controls sizing for thumb reach */
+  .vrow{ height: 48px; padding: 0 8px; }
+  .vrow .qty-input{ width: 64px; height: 32px; padding: 4px 8px; }
+  .vrow .btn.add-to-cart{ height: 32px; line-height: 30px; padding: 0 10px; }
+
+  /* Make the cart FAB respect safe-area and be easy to tap */
+  .cart-fab{
+    top: max(10px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+    padding: 10px 14px;
+  }
+}
+
+/* iOS-specific polish */
+@supports (-webkit-touch-callout: none){
+  #table-viewport{ -webkit-overflow-scrolling: touch; }
+}
