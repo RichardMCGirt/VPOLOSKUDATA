@@ -1,19 +1,4 @@
-/* cart.js
-   Wires the Fill-In form to AirtableService:
-   - Populates Branch & Field Manager from SOURCE TABLES (linked records; values = record IDs)
-   - Populates Needed By & Reason by scanning current Fill-In view (plain/single-select)
-   - Saves/patches a record on "Save to Airtable"
-   - Prefills when ?rec=recXXXX is present
-   - Renders cart from localStorage, supports inline qty edits, per-row remove, and Clear All
-   - Broadcasts cart changes to other tabs (index.html) using BroadcastChannel "vanir_cart_bc"
-   - Full Labor UI — add/edit/remove rows, persists to localStorage, updates totals
-   - Branch dropdown filters out options that are NOT likely US cities (heuristic)
-   - NEW (this update):
-       • Single global Material Margin (%) input (default 30) near totals that applies to ALL materials
-       • Removed per-row margin inputs
-       • More robust labor removal (delegated listener)
-   Requires: airtable.service.js
-*/
+
 (function () {
   "use strict";
 
@@ -604,15 +589,46 @@ function renderSavedCart(stateMaybe) {
   };
 
   // Remove product buttons
-  tbody.onclick = (ev) => {
-    const btn = ev.target.closest(".remove-item");
-    if (!btn) return;
-    const key = btn.getAttribute("data-key");
-    removeItemFromCart(key);
-  };
- 
-}
+tbody.onclick = (ev) => {
+  try {
+    logger.debug?.("cart", "[tbody.onclick] click event", {
+      type: ev?.type,
+      target: ev?.target,
+      currentTarget: ev?.currentTarget
+    });
 
+    const removeBtn = ev.target.closest(".remove-item");
+    if (!removeBtn) {
+      logger.trace?.("cart", "[tbody.onclick] click did not hit .remove-item");
+      return;
+    }
+
+    // Primary key from the button
+    let key = removeBtn.getAttribute("data-key");
+    logger.debug?.("cart", "[tbody.onclick] .remove-item clicked; found data-key:", key);
+
+    // Fallback: try to read from the closest row if button’s data-key is missing
+    if (!key) {
+      const tr = removeBtn.closest("tr");
+      const trKey = tr?.getAttribute("data-key");
+      logger.warn?.("cart", "[tbody.onclick] .remove-item missing data-key; trying <tr data-key>", trKey);
+      if (trKey) key = trKey;
+    }
+
+    if (!key) {
+      logger.error?.("cart", "[tbody.onclick] No data-key found on button or row; cannot remove");
+      return;
+    }
+
+    // Proceed to removal
+    logger.info?.("cart", "[tbody.onclick] Removing item with key:", key);
+    removeItemFromCart(key);
+  } catch (err) {
+    logger.error?.("cart", "[tbody.onclick] Unhandled error:", err);
+  }
+};
+
+}
 
 function updateTotalsOnly(state) {
   const products = Array.isArray(state?.cart) ? state.cart : [];
@@ -640,31 +656,54 @@ function updateTotalsOnly(state) {
 
 
   // Dedicated remove function
-  function removeItemFromCart(key) {
-    if (!key) return;
-    const data = getSaved();
-    const beforeLen = data.cart.length;
-    data.cart = data.cart.filter(c => c.key !== key);
-    if (data.cart.length !== beforeLen) {
-      setSaved(data);
-      renderSavedCart(data);
-      showToast?.("Removed from cart");
+// --- removeItemFromCart (fix invalid logger call) ---
+function removeItemFromCart(key) {
+  try {
+    if (!key) {
+      logger.error?.("cart", "[removeItemFromCart] Missing key");
+      return;
     }
-  }
 
-  function wireClearAll() {
-    const btn = $("#clearCart");
-    if (!btn || btn._bound) return;
-    btn._bound = true;
-    btn.addEventListener("click", () => {
-      const data = getSaved();
-      data.cart = [];
-      data.labor = [];
-      setSaved(data);
-      renderSavedCart(data);
-      showToast?.("Cart cleared");
-    }, { passive: true });
+    const before = getSaved();
+    const beforeLen = Array.isArray(before.cart) ? before.cart.length : 0;
+    const exists = before.cart?.some(c => c?.key === key);
+
+    logger.info?.("cart", "[removeItemFromCart] Start", { key, beforeLen, exists });
+
+    const next = { ...before, cart: (before.cart || []).filter(c => c.key !== key) };
+    const afterLen = next.cart.length;
+
+    setSaved(next);
+    renderSavedCart(next);
+
+    if (afterLen < beforeLen) {
+      // was: logger.ok?.?.(…) ← invalid
+      logger.info?.("cart", "[removeItemFromCart] Removed successfully", { key, afterLen });
+      try { showToast?.("Removed from cart"); } catch {}
+    } else {
+      logger.warn?.("cart", "[removeItemFromCart] No change in length; key not found?", { key, afterLen, beforeLen });
+    }
+  } catch (err) {
+    logger.error?.("cart", "[removeItemFromCart] Error while removing", { key, err });
   }
+}
+
+
+function wireClearAll() {
+  const clearBtn = document.querySelector("#clearCart");
+  if (!clearBtn || clearBtn._bound) return;
+  clearBtn._bound = true;
+
+  clearBtn.addEventListener("click", () => {
+    logger.info?.("cart", "[clear] Clearing cart + labor and localStorage");
+    try { localStorage.removeItem("vanir_cart_v1"); } catch {}
+    setSaved({ cart: [], labor: [] });
+    renderSavedCart({ cart: [], labor: [] });
+    try { showToast?.("Cart cleared"); } catch {}
+  }, { passive: true });
+}
+
+
 
   function wireAddLabor() {
     const btn = $("#addLabor");
@@ -744,15 +783,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 6) Cross-tab updates (once)
   if (bc && !bc._bound) {
     bc._bound = true;
-    bc.onmessage = (ev) => {
-      const t = ev?.data?.type;
-      if (t === "focus") { try { window.focus(); } catch {} return; }
-      if (t !== "cart:update" && t !== "cartUpdate") return;
+   bc.onmessage = (ev) => {
+  const t = ev?.data?.type;
+  if (t === "focus") { try { window.focus(); } catch {} return; }
+  if (t !== "cart:update" && t !== "cartUpdate") return;
 
-      const s = normalizeSaved(getSaved());
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
-      renderSavedCart(s);
-    };
+  const incoming = normalizeSaved(ev?.data?.state || {});
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(incoming)); } catch {}
+  renderSavedCart(incoming);
+};
   }
 });
 

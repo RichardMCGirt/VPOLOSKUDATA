@@ -1176,6 +1176,19 @@ function scheduleSilentRefresh(delayMs) {
     try { tokenClient.requestAccessToken({ prompt: "" }); } catch {}
   }, delayMs);
 }
+// Put this near the top where STORAGE_KEY / CART / LABOR_LINES live
+function broadcastCartState() {
+  try {
+    const s = serializeState();
+    if (typeof BroadcastChannel !== "undefined") {
+      const bc = new BroadcastChannel("vanir_cart_bc");
+      // canonical event
+      bc.postMessage({ type: "cart:update", state: s });
+      // backward-compat (cart.js still listens to this alias)
+      bc.postMessage({ type: "cartUpdate", state: s });
+    }
+  } catch (_) {}
+}
 
 function clearLocalToken() {
   try { localStorage.removeItem(TOKEN_STORAGE_KEY); } catch {}
@@ -1510,9 +1523,9 @@ function __virtRowHTML(r, idx, topPx) {
        inputmode="numeric"
        pattern="[0-9]*"
        class="qty-input"
-       min="1"
+       min="0"
        step="1"
-       value="1"
+       value="0"
        data-idx="${idx}"
        autocomplete="off"
        style="width:70px;padding:4px 6px;">
@@ -1556,7 +1569,20 @@ function showDescSheetForRow(row){
 function hideDescSheet(){
   const sheet = document.getElementById("desc-sheet");
   if (sheet) sheet.hidden = true;
+
+  // After closing, focus the inline qty of the same row (nice for power users)
+  if (__dsLastRow) {
+    try {
+      const idx = (window.FILTERED_ROWS || []).indexOf(__dsLastRow);
+      if (idx >= 0) {
+        const rowEl = document.querySelector(`.vrow[data-idx="${idx}"]`);
+        const qtyEl = rowEl ? rowEl.querySelector('.qty-input') : null;
+        if (qtyEl) { qtyEl.focus(); qtyEl.select(); }
+      }
+    } catch {}
+  }
 }
+
 
 function __parseQty(val){
   const s = String(val||"").replace(/[^\d]/g,"");
@@ -2242,55 +2268,77 @@ function renderTableAll(rows) {
 }
 
 function addToCart(row, qty) {
-  if (!(qty > 0)) return; 
-const key = `${row.sku}|${row.vendor}|${row.uom || ''}`;
+  if (!(qty > 0)) return;
+  const key = `${row.sku}|${row.vendor}|${row.uom || ''}`;
   const existing = CART.get(key);
   const ub = unitBase(row);
+
   if (existing) existing.qty += qty;
   else CART.set(key, { row, qty, unitBase: ub, marginPct: DEFAULT_PRODUCT_MARGIN_PCT });
-  if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0);
+
+  if (LABOR_LINES.length === 0) addLaborLine(0, 0, "Labor line", 0); // ensures one labor row
+
   renderCart();
+  persistState();            // save first
+  broadcastCartState();      // then broadcast
   showToast(`Added ${qty} ${row?.sku || "item"} to cart`);
   showEl("cart-section", true);
-  persistState();
   updateCartBadge();
 }
+
 
 function addLaborLine(rate = 0, qty = 0, name = "Labor line", marginPct = 0) {
   const safeQty  = Math.max(0, Math.floor(qty || 0));
   const safeRate = Number(rate) || 0;
   const safePct  = Math.max(0, Number(marginPct) || 0);
+
   LABOR_LINES.push({ id: _laborIdSeq++, rate: safeRate, qty: safeQty, name, marginPct: safePct });
+
   showEl("cart-section", true);
   renderCart();
   persistState();
+  broadcastCartState();
+  updateCartBadge();
 }
 
 function updateCartQty(key, qty) {
   const item = CART.get(key);
   if (!item) return;
+
   item.qty = Math.max(1, Math.floor(qty || 1));
   renderCart();
   persistState();
+  broadcastCartState();
   updateCartBadge();
 }
+
 
 function removeCartItem(key) {
   if (!CART.has(key)) return;
+
   CART.delete(key);
   renderCart();
+
   if (CART.size === 0 && LABOR_LINES.length === 0) showEl("cart-section", false);
+
   persistState();
+  broadcastCartState();
   updateCartBadge();
 }
 
+
 function clearCart() {
   CART.clear();
+  LABOR_LINES.length = 0;     // ← also clear labor lines for true “Clear All”
+
   renderCart();
-  if (LABOR_LINES.length === 0) showEl("cart-section", false);
+  showEl("cart-section", false);
+
   persistState();
+  broadcastCartState();
   updateCartBadge();
 }
+
 
 let _laborIdSeq = 1;
 
