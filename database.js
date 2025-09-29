@@ -598,7 +598,7 @@ function __virtEnsureEls() {
   measureRow.style.top = "0px";
   measureRow.innerHTML = `
     <div>Vendor</div><div>SKU</div><div>UOM</div><div>Description</div>
-    <div>Helper</div><div>Multiple</div><div>Cost</div><div>Price Ext</div>
+    <div>Helper</div><div>Cost</div><div>Price Ext</div>
   `;
   spacer.appendChild(measureRow);
 
@@ -624,7 +624,6 @@ function __virtRowHTML(r, idx, topPx) {
       <div>${escapeHtml(r.uom||"")}</div>
       <div>${escapeHtml(r.description||"")}</div>
       <div>${escapeHtml(r.skuHelper||"")}</div>
-      <div>${escapeHtml(r.uomMultiple==null? "" : String(r.uomMultiple))}</div>
       <div>${escapeHtml(formatMoney(r.cost))}</div>
       <div>${escapeHtml(formatMoney(unitBase(r)))}</div>
       <!-- actions (new) -->
@@ -1534,7 +1533,6 @@ const HEADER_ALIASES = {
   uom:           ["uom","unit","unit of measure"],
   description:   ["description","desc","item description"],
   skuHelper:     ["skuhelper","sku helper","helper"],
-  uomMultiple:   ["uom multiple","uommultiple","multiplier","pack qty","pack quantity"],
   cost:          ["cost","unit cost","price"],
   priceExtended: ["price extende","price extended","extended price","ext price"]
 };
@@ -1588,7 +1586,6 @@ function __virtRowHTML(r, idx, topPx) {
       <div class="cell-uom">${escapeHtml(r.uom||"")}</div>
       <div class="cell-desc">${escapeHtml(r.description||"")}</div>
       <div class="cell-helper">${escapeHtml(r.skuHelper||"")}</div>
-      <div class="cell-mult">${escapeHtml(r.uomMultiple==null? "" : String(r.uomMultiple))}</div>
       <div class="cell-cost">${escapeHtml(formatMoney(r.cost))}</div>
       <div class="cell-price">${escapeHtml(formatMoney(unitBase(r)))}</div>
       <div class="vactions">
@@ -1622,7 +1619,6 @@ function showDescSheetForRow(row){
   $("ds-vendor").textContent  = String(row?.vendor || "—");
   $("ds-uom").textContent     = String(row?.uom || "—");
   $("ds-helper").textContent  = String(row?.skuHelper || "—");
-  $("ds-multiple").textContent= row?.uomMultiple==null ? "—" : String(row.uomMultiple);
   try {
     $("ds-price").textContent = formatMoney(unitBase(row));
   } catch { $("ds-price").textContent = "—"; }
@@ -1790,7 +1786,6 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     uom:           findCol("uom","unit","unit_of_measure","units"),
     description:   findCol("description","desc","product_description","name"),
     skuHelper:     findCol("sku_helper","helper","alt_sku","sku_hint"),
-    uomMultiple:   findCol("uom_multiple","multiple","multiplier"),
     cost:          findCol("cost","unit_cost","buy","buy_cost"),
     priceExtended: findCol("price_extended","extended","extended_price","unit_price","sell","price"),
     marginPct:     findCol("margin_pct","margin","markup_pct","markup"),
@@ -1805,7 +1800,6 @@ async function fetchProductSheet(spreadsheetId, gidNumber = null) {
     const uom     = colMap.uom           != null ? row[colMap.uom]           : "";
     const desc    = colMap.description   != null ? row[colMap.description]   : "";
     const helper  = colMap.skuHelper     != null ? row[colMap.skuHelper]     : "";
-    const mult    = colMap.uomMultiple   != null ? parseNumber(row[colMap.uomMultiple])   : null;
     const cost    = colMap.cost          != null ? parseNumber(row[colMap.cost])          : null;
     let   px      = colMap.priceExtended != null ? parseNumber(row[colMap.priceExtended]) : null;
 
@@ -1825,7 +1819,6 @@ if (!cleanSku && !nm(rawDesc)) continue;
       uom: norm(uom),
       description,
       skuHelper: norm(helper) || makeSkuHelper?.(sku, vendor) || "",
-      uomMultiple: mult,
       cost: cost,
       priceExtended: px,
       category: categorizeDescription?.(description),
@@ -1877,7 +1870,6 @@ function escapeHtml(s) {
 }
 
 function unitBase(row) {
-  const mult = row.uomMultiple == null ? 1 : Number(row.uomMultiple) || 1;
   const px = (row.priceExtended != null ? Number(row.priceExtended) : null);
   const cost = (row.cost != null ? Number(row.cost) : 0);
   return (px != null ? px : (mult * cost));
@@ -2253,7 +2245,6 @@ function paintVirtualSlice(){
     cells[2].textContent = safeText(r.uom);
     cells[3].textContent = safeText(r.description);
     cells[4].textContent = safeText(r.skuHelper);
-    cells[5].textContent = toFixedMaybe(r.uomMultiple);
     cells[6].textContent = moneyMaybe(r.cost);
     cells[7].textContent = moneyMaybe(r.priceExtended);
   }
@@ -3272,6 +3263,15 @@ function transformWindowRows(header, dataRows) {
   
   return rows;
 }
+
+ (function hideDetailRows(){
+    try {
+      var helperRow = document.getElementById("ds-helper")?.closest(".ds-row");
+      if (helperRow) helperRow.style.display = "none";
+      var multipleRow = document.getElementById("ds-multiple")?.closest(".ds-row");
+      if (multipleRow) multipleRow.style.display = "none";
+    } catch (e) {}
+  })();
 
 function renderTableAppend(rows) {
 if (!hasAnyActiveFilter()) { return; }

@@ -515,6 +515,34 @@ tbody tr:last-child td { border-bottom: none; }
   background: #fff;
   will-change: transform;
 }
+
+/* Hides the entire ds-row if it contains #ds-helper or #ds-multiple */
+.ds-row:has(#ds-helper),
+.ds-row:has(#ds-multiple) {
+  display: none !important;
+}
+
+/* header */
+#table-viewport .vhead > div:nth-child(5),
+#table-viewport .vhead > div:nth-child(6) {
+  display: none;
+}
+
+/* body rows */
+#table-viewport .vrow > div:nth-child(5) {
+  display: none;
+}
+
+/* If you're using CSS Grid with fixed template columns, remove the tracks too */
+#table-viewport .vhead,
+#table-viewport .vrow {
+  /* example with 8 columns originally:
+     Vendor | SKU | UOM | Desc | Helper | Multiple | Cost | PriceExt
+     Remove the 5th & 6th tracks */
+  grid-template-columns: 1fr 1fr 1fr 2fr 1fr 1fr 1fr; /* now 6 columns */
+}
+
+
 /* === Virtual table layout + polish === */
 :root{
   --col-vendor: 140px;
@@ -1142,4 +1170,16 @@ tbody tr:last-child td { border-bottom: none; }
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+/* Ensure the actions column has a fixed min-width and stays on the far right */
+:root {
+  --col-actions: 180px; /* increase if buttons feel cramped */
+}
+
+.vrow .vactions {
+  justify-self: end;   /* aligns to the right edge of its grid cell */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 160px;    /* prevents overlapping */
 }
