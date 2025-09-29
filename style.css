@@ -520,8 +520,8 @@ tbody tr:last-child td { border-bottom: none; }
   --col-vendor: 140px;
   --col-sku:    140px;
   --col-uom:     70px;
-  --col-desc:      1fr;  /* flex column */
-  --col-helper: 180px;
+--col-desc: minmax(240px, 1fr);  /* was 1fr */  
+--col-helper: 0px;
   --col-mult:    90px;
   --col-cost:    90px;
   --col-price:  100px;
@@ -610,12 +610,6 @@ tbody tr:last-child td { border-bottom: none; }
     overflow-x: none;
     /* keeps vertical inertia on iOS too (you already have -webkit-overflow-scrolling) */
   }
-
-  /* We’re hiding columns 5 & 6 (Helper, Multiple) in your mobile rules already.
-     Remaining DOM order is:
-       1 Vendor, 2 SKU, 3 UOM, 4 Description, 7 Cost, 8 Price, 9 Actions
-     Below, we RE-MAP these into grid columns so SKU becomes column 1,
-     then Vendor column 2, then the rest in sequence. */
 
   /* header grid placement */
   #table-viewport .vhead{
@@ -1141,4 +1135,11 @@ tbody tr:last-child td { border-bottom: none; }
     border-top-left-radius: 16px; border-top-right-radius: 16px;
     padding-bottom: calc(12px + env(safe-area-inset-bottom));
   }
+}
+/* make sure we’re selecting the right class name */
+#table-viewport .cell-desc{
+  min-width: 0;          /* allow shrinking inside the grid */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
