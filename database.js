@@ -667,7 +667,8 @@ function renderVirtualTableInit() {
   }
 
   renderVirtualTableSlice();
-  wireVirtualRowClicks(); // <— make sure clicks are wired
+  wireVirtualRowClicks(); 
+wireDescriptionSheet();
 }
 
 function renderTableAllVirtual(rows) {
@@ -1488,6 +1489,145 @@ async function getSheetTitleByGid(spreadsheetId, gidNumber) {
     return null;
   }
 }
+
+function __virtRowHTML(r, idx, topPx) {
+  const key = `${String(r.sku||"")}|${String(r.vendor||"")}|${String(r.uom||"")}`;
+  return `
+    <div class="vrow" style="top:${topPx}px" data-key="${escapeHtml(key)}" data-idx="${idx}">
+      <div class="cell-vendor">${escapeHtml(r.vendor||"")}</div>
+      <div class="cell-sku" data-idx="${idx}" role="button" tabindex="0" aria-label="Show details for ${escapeHtml(r.sku||"")}">
+        ${escapeHtml(r.sku||"")}
+      </div>
+      <div class="cell-uom">${escapeHtml(r.uom||"")}</div>
+      <div class="cell-desc">${escapeHtml(r.description||"")}</div>
+      <div class="cell-helper">${escapeHtml(r.skuHelper||"")}</div>
+      <div class="cell-mult">${escapeHtml(r.uomMultiple==null? "" : String(r.uomMultiple))}</div>
+      <div class="cell-cost">${escapeHtml(formatMoney(r.cost))}</div>
+      <div class="cell-price">${escapeHtml(formatMoney(unitBase(r)))}</div>
+      <div class="vactions">
+<input aria-label="Quantity"
+       type="text"
+       inputmode="numeric"
+       pattern="[0-9]*"
+       class="qty-input"
+       min="1"
+       step="1"
+       value="1"
+       data-idx="${idx}"
+       autocomplete="off"
+       style="width:70px;padding:4px 6px;">
+        <button class="btn add-to-cart" data-key="${escapeHtml(key)}" data-idx="${idx}">Add</button>
+      </div>
+    </div>
+  `;
+}
+
+// Keep last row reference so the sheet can add to cart
+let __dsLastRow = null;
+let __dsLastKey = "";
+
+function showDescSheetForRow(row){
+  __dsLastRow = row || null;
+  const $ = (id) => document.getElementById(id);
+
+  document.getElementById("ds-title").textContent   = String(row?.sku || "—");
+  $("ds-sku").textContent     = String(row?.sku || "—");
+  $("ds-vendor").textContent  = String(row?.vendor || "—");
+  $("ds-uom").textContent     = String(row?.uom || "—");
+  $("ds-helper").textContent  = String(row?.skuHelper || "—");
+  $("ds-multiple").textContent= row?.uomMultiple==null ? "—" : String(row.uomMultiple);
+  try {
+    $("ds-price").textContent = formatMoney(unitBase(row));
+  } catch { $("ds-price").textContent = "—"; }
+  $("ds-desc").textContent    = String(row?.description || "—");
+
+  // compute item key (same as row add)
+  __dsLastKey = `${String(row?.sku||"")}|${String(row?.vendor||"")}|${String(row?.uom||"")}`;
+
+  const sheet = document.getElementById("desc-sheet");
+  sheet.hidden = false;
+
+  // reset & focus qty
+  const qty = document.getElementById("ds-qty");
+  qty.value = "1";
+  setTimeout(() => { try { qty.focus(); qty.select(); } catch {} }, 0);
+}
+
+function hideDescSheet(){
+  const sheet = document.getElementById("desc-sheet");
+  if (sheet) sheet.hidden = true;
+}
+
+function __parseQty(val){
+  const s = String(val||"").replace(/[^\d]/g,"");
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+function wireDescriptionSheet(){
+  const vp = document.getElementById("table-viewport");
+  if (vp && !vp.__wiredDesc){
+    vp.__wiredDesc = true;
+
+    // Click / key on SKU cell opens the sheet
+    vp.addEventListener("click", (e) => {
+      const el = e.target.closest(".cell-sku");
+      if (!el) return;
+      const idx = Number(el.getAttribute("data-idx"));
+      const row = (window.FILTERED_ROWS && window.FILTERED_ROWS[idx]) || null;
+      if (row) showDescSheetForRow(row);
+    });
+    vp.addEventListener("keydown", (e) => {
+      const el = e.target.closest && e.target.closest(".cell-sku");
+      if (!el) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        const idx = Number(el.getAttribute("data-idx"));
+        const row = (window.FILTERED_ROWS && window.FILTERED_ROWS[idx]) || null;
+        if (row) showDescSheetForRow(row);
+      }
+    });
+  }
+
+  // Sheet close actions
+  const sheet = document.getElementById("desc-sheet");
+  const closeBtn = document.getElementById("ds-close");
+  const backdrop = sheet?.querySelector(".ds-backdrop");
+  if (closeBtn && !closeBtn.__wired){
+    closeBtn.__wired = true;
+    closeBtn.addEventListener("click", hideDescSheet);
+  }
+  if (backdrop && !backdrop.__wired){
+    backdrop.__wired = true;
+    backdrop.addEventListener("click", hideDescSheet);
+  }
+  if (!document.__wiredEscClose){
+    document.__wiredEscClose = true;
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") hideDescSheet();
+    });
+  }
+
+  // Submit handler: add from sheet and close
+  const form = document.getElementById("ds-form");
+  if (form && !form.__wired){
+    form.__wired = true;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      try {
+        const qty = __parseQty(document.getElementById("ds-qty").value);
+        if (__dsLastRow && __dsLastKey) {
+          addToCartFromRow(__dsLastRow, __dsLastKey, qty);
+          hideDescSheet();
+        }
+      } catch (err) {
+        console.error("[desc-sheet] submit failed", err);
+      }
+    });
+  }
+}
+
+
 
 async function fetchProductSheet(spreadsheetId, gidNumber = null) {
   let title = null;

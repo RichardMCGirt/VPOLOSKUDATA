@@ -92,8 +92,43 @@
   </label>
 </div>
 
+<!-- ===== Description Sheet (mobile/desktop) ===== -->
+<!-- ===== Description Sheet (mobile/desktop) ===== -->
+<div id="desc-sheet" hidden>
+  <div class="ds-backdrop"></div>
+  <div class="ds-panel" role="dialog" aria-modal="true" aria-labelledby="ds-title">
+    <div class="ds-header">
+      <strong id="ds-title">Item</strong>
+      <button id="ds-close" class="btn ds-close" aria-label="Close">✕</button>
+    </div>
 
-  <!-- JS -->
+    <div class="ds-body">
+      <div class="ds-row"><span class="k">Vendor</span><span class="v" id="ds-vendor">—</span></div>
+      <div class="ds-row"><span class="k">SKU</span><span class="v" id="ds-sku">—</span></div>
+      <div class="ds-row"><span class="k">UOM</span><span class="v" id="ds-uom">—</span></div>
+      <div class="ds-row"><span class="k">Helper</span><span class="v" id="ds-helper">—</span></div>
+      <div class="ds-row"><span class="k">Multiple</span><span class="v" id="ds-multiple">—</span></div>
+      <div class="ds-row big"><span class="k">Description</span><span class="v" id="ds-desc">—</span></div>
+      <div class="ds-row"><span class="k">Unit Price</span><span class="v" id="ds-price">—</span></div>
+    </div>
+
+    <form id="ds-form" class="ds-actions" autocomplete="off">
+      <input id="ds-qty"
+             type="text"
+             inputmode="numeric"
+             pattern="[0-9]*"
+             aria-label="Quantity"
+             placeholder="Qty"
+             value="1"
+             minlength="1"
+             class="ds-qty">
+      <button id="ds-add" type="submit" class="btn ds-add">Add</button>
+    </form>
+  </div>
+</div>
+
+
+
 
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
 <script src="database.js"></script>
